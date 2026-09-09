@@ -2,6 +2,24 @@
 
 Pi-side recording stack for Raspberry Pi 4 + Jabra Speak 710 + Waveshare 1.3-inch SH1106 OLED HAT + PiSugar 3 Plus.
 
+## Install on the Raspberry Pi
+
+```bash
+cd ~
+git clone https://github.com/Socev/visitescribe.git
+cd visitescribe
+sudo ./install.sh
+```
+
+After installation:
+
+```bash
+sudo visitescribe-admin status
+sudo visitescribe-admin selftest
+```
+
+The default server is `https://scribe.primumnonnocere.olares.com`, but uploads ship disabled until mTLS credentials and the server wrapping public key are provisioned.
+
 ## v0.2 features
 
 - three recording modes: single patient, multi-patient round, meeting
@@ -21,6 +39,8 @@ Pi-side recording stack for Raspberry Pi 4 + Jabra Speak 710 + Waveshare 1.3-inc
 ## Important security note
 
 The device master key used to wrap local session keys is stored on the Pi. This protects the audio files from casual/offline access to the SD filesystem but is not equivalent to a hardware-backed TPM. Before real clinical use, provision the server public wrapping key and mTLS identity, complete the DPIA/security review, and test lost-device procedures.
+
+**Never commit client certificates, private keys, device keys, audio, transcripts, or session data to this repository.** `.gitignore` contains defensive patterns, but it is not a substitute for secret handling discipline.
 
 ## Admin commands
 
@@ -43,3 +63,5 @@ sudo journalctl -u visitescribe-uploader -n 30 --no-pager
 ## Current safe default
 
 `upload_enabled` is false and `delete_encrypted_audio_after_ingest` is false. The device therefore records and queues completely offline until server credentials are intentionally provisioned.
+
+See [`API_CONTRACT.md`](API_CONTRACT.md) for the ingest API expected from the server.
