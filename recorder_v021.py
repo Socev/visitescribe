@@ -37,7 +37,9 @@ class RecorderAppV021(RecorderApp):
         success = False
         try:
             duration_ms, rate, channels, sampwidth = self.wav_info(wav_path)
-            if duration_ms < 100:
+            # Do not discard short valid fragments: a patient boundary can
+            # legitimately occur only milliseconds after an automatic split.
+            if duration_ms <= 0:
                 self.processed_wavs.add(str(wav_path))
                 success = True
                 return
