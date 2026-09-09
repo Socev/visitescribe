@@ -33,10 +33,11 @@ chown "$USER_NAME:$USER_NAME" /var/lib/visitescribe
 
 if [ -d /opt/visitescribe ] && [ -n "$(ls -A /opt/visitescribe 2>/dev/null || true)" ]; then
   mkdir -p /var/backups/visitescribe
-  tar -czf "/var/backups/visitescribe/opt-before-v02-$(date +%Y%m%dT%H%M%S).tgz" -C /opt visitescribe || true
+  tar -czf "/var/backups/visitescribe/opt-before-v021-$(date +%Y%m%dT%H%M%S).tgz" -C /opt visitescribe || true
 fi
 
 install -o root -g root -m 0755 "$SRC_DIR/recorder.py" /opt/visitescribe/recorder.py
+install -o root -g root -m 0755 "$SRC_DIR/recorder_v021.py" /opt/visitescribe/recorder_v021.py
 install -o root -g root -m 0755 "$SRC_DIR/uploader.py" /opt/visitescribe/uploader.py
 install -o root -g root -m 0755 "$SRC_DIR/visitescribe-admin" /usr/local/sbin/visitescribe-admin
 
@@ -65,4 +66,4 @@ sleep 2
 
 echo "recorder: $(systemctl is-active visitescribe-recorder.service || true)"
 echo "uploader: $(systemctl is-active visitescribe-uploader.service || true)"
-echo "VISITESCRIBE_V02_INSTALL_OK"
+echo "VISITESCRIBE_V021_INSTALL_OK"
