@@ -1,5 +1,5 @@
 [Unit]
-Description=VisiteScribe v0.2 recorder
+Description=VisiteScribe v0.2.1 recorder
 After=multi-user.target sound.target pisugar-server.service
 Wants=pisugar-server.service
 
@@ -12,7 +12,7 @@ UMask=0077
 RuntimeDirectory=visitescribe
 RuntimeDirectoryMode=0700
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /opt/visitescribe/recorder.py
+ExecStart=/usr/bin/python3 /opt/visitescribe/recorder_v021.py
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15
