@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local/runtime data
+sessions/
+run/
+*.wav
+*.flac
+*.enc
+*.part
+*.log
+
+# Credentials and keys - NEVER COMMIT
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+client.*
+device.key
+server-wrap-public.pem
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
