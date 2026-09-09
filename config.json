@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "device_id": "visitescribe-001",
+  "audio": {
+    "device": "plughw:CARD=J710,DEV=0",
+    "rate_hz": 48000,
+    "channels": 1,
+    "chunk_seconds": 30
+  },
+  "storage": {
+    "minimum_free_bytes": 1073741824,
+    "delete_encrypted_audio_after_ingest": false
+  },
+  "server": {
+    "base_url": "https://scribe.primumnonnocere.olares.com",
+    "upload_enabled": false,
+    "require_mtls": true,
+    "client_cert": "/etc/visitescribe/client.crt",
+    "client_key": "/etc/visitescribe/client.key",
+    "server_wrap_public_key": "/etc/visitescribe/server-wrap-public.pem",
+    "ca_bundle": null,
+    "connect_timeout_seconds": 10,
+    "read_timeout_seconds": 60
+  }
+}
