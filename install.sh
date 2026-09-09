@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Run with sudo: sudo ./install.sh" >&2
+  echo "Run with sudo: sudo bash install.sh" >&2
   exit 1
 fi
 
@@ -26,7 +26,9 @@ done
 systemctl disable --now visitescribe.service >/dev/null 2>&1 || true
 
 mkdir -p /opt/visitescribe /etc/visitescribe /var/lib/visitescribe/sessions
-chmod 700 /etc/visitescribe /var/lib/visitescribe
+chown root:"$USER_NAME" /etc/visitescribe
+chmod 0750 /etc/visitescribe
+chmod 0700 /var/lib/visitescribe
 chown "$USER_NAME:$USER_NAME" /var/lib/visitescribe
 
 if [ -d /opt/visitescribe ] && [ -n "$(ls -A /opt/visitescribe 2>/dev/null || true)" ]; then
@@ -41,6 +43,8 @@ install -o root -g root -m 0755 "$SRC_DIR/visitescribe-admin" /usr/local/sbin/vi
 if [ ! -f /etc/visitescribe/config.json ]; then
   install -o root -g "$USER_NAME" -m 0640 "$SRC_DIR/config.json" /etc/visitescribe/config.json
 else
+  chown root:"$USER_NAME" /etc/visitescribe/config.json
+  chmod 0640 /etc/visitescribe/config.json
   echo "Bestaande /etc/visitescribe/config.json behouden"
 fi
 
