@@ -1,0 +1,27 @@
+[Unit]
+Description=VisiteScribe v0.2 recorder
+After=multi-user.target sound.target pisugar-server.service
+Wants=pisugar-server.service
+
+[Service]
+Type=simple
+User=visitescribe
+Group=visitescribe
+SupplementaryGroups=audio gpio spi i2c
+UMask=0077
+RuntimeDirectory=visitescribe
+RuntimeDirectoryMode=0700
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/visitescribe/recorder.py
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/visitescribe /run/visitescribe
+ReadOnlyPaths=/etc/visitescribe
+
+[Install]
+WantedBy=multi-user.target
