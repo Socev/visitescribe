@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+import json
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+CFG = Path('/etc/visitescribe/config.json')
+DATA = Path('/var/lib/visitescribe/sessions')
+STATUS = Path('/var/lib/visitescribe/uploader-status.json')
+
+
+def load(path, default=None):
+    try: return json.loads(path.read_text())
+    except Exception: return default
+
+
+def save(path, obj):
+    st = path.stat() if path.exists() else None
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(obj, indent=2) + '\n')
+    os.chmod(tmp, 0o640)
+    if st is not None:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    os.replace(tmp, path)
+
+
+def active(unit):
+    p = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True)
+    return p.stdout.strip() or 'unknown'
+
+
+def battery():
+    try:
+        with socket.create_connection(('127.0.0.1', 8423), timeout=.5) as s:
+            s.sendall(b'get battery\n'); d=s.recv(100).decode()
+        return d.split(':',1)[1].strip() + '%'
+    except Exception: return '?'
+
+
+def queue_count():
+    n=0
+    if not DATA.exists(): return 0
+    for d in DATA.iterdir():
+        m=load(d/'manifest.json',{}) or {}; u=load(d/'upload.json',{}) or {}
+        if m.get('schema_version')==2 and m.get('status') in ('complete','interrupted') and u.get('state') not in ('ingested','purged'):
+            n += 1
+    return n
+
+
+def status():
+    c=load(CFG,{}) or {}; s=load(STATUS,{}) or {}
+    print(f"recorder: {active('visitescribe-recorder.service')}")
+    print(f"uploader: {active('visitescribe-uploader.service')}")
+    print(f"battery: {battery()}")
+    print(f"queue: {queue_count()}")
+    print(f"upload: {'enabled' if c.get('server',{}).get('upload_enabled') else 'disabled'}")
+    print(f"server: {c.get('server',{}).get('base_url','?')}")
+    print(f"netstate: {s.get('state','?')}")
+
+
+def set_upload(enabled):
+    c=load(CFG,{}) or {}; srv=c.setdefault('server',{})
+    if enabled:
+        missing=[]
+        for key in ('server_wrap_public_key','client_cert','client_key'):
+            p=srv.get(key)
+            if not p or not Path(p).exists(): missing.append(key)
+        if missing:
+            print('NIET INGESCHAKELD; ontbreekt: ' + ', '.join(missing)); sys.exit(2)
+    srv['upload_enabled']=enabled; save(CFG,c)
+    subprocess.run(['systemctl','restart','visitescribe-uploader.service'])
+    print('upload enabled' if enabled else 'upload disabled')
+
+
+def selftest():
+    print('mic:', 'ok' if 'Jabra Speak 710' in subprocess.run(['arecord','-l'],capture_output=True,text=True).stdout else 'FAIL')
+    print('spi:', 'ok' if Path('/dev/spidev0.0').exists() else 'FAIL')
+    print('i2c:', 'ok' if Path('/dev/i2c-1').exists() else 'FAIL')
+    print('key:', 'ok' if Path('/etc/visitescribe/device.key').exists() and Path('/etc/visitescribe/device.key').stat().st_size==32 else 'FAIL')
+    print('battery:', battery())
+    print('queue:', queue_count())
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv)>1 else 'status'
+    if cmd=='status': status()
+    elif cmd=='selftest': selftest()
+    elif cmd=='enable-upload': set_upload(True)
+    elif cmd=='disable-upload': set_upload(False)
+    elif cmd=='config': print(CFG.read_text())
+    elif cmd=='queue':
+        print(queue_count())
+    else:
+        print('usage: visitescribe-admin [status|selftest|queue|config|enable-upload|disable-upload]')
+        sys.exit(1)
+
+if __name__=='__main__': main()
