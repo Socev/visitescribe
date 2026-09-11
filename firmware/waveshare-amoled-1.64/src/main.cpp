@@ -37,23 +37,19 @@ static constexpr int SD_CS = 38;
 // GPIO0 is the physical BOOT button. Arduino-ESP32 already owns BOOT_PIN.
 static constexpr int VISITESCRIBE_BOOT_GPIO = 0;
 
-static constexpr uint16_t C_BG      = 0x0000;
-static constexpr uint16_t C_PANEL   = 0x1082;
-static constexpr uint16_t C_PANEL2  = 0x18E3;
-static constexpr uint16_t C_WHITE   = 0xFFFF;
-static constexpr uint16_t C_MUTED   = 0x9CF3;
-static constexpr uint16_t C_GREEN   = 0x4FE9;
-static constexpr uint16_t C_RED     = 0xF986;
-static constexpr uint16_t C_AMBER   = 0xFD20;
-static constexpr uint16_t C_BLUE    = 0x3DDF;
-static constexpr uint16_t C_CYAN    = 0x4FFF;
-
-// Full-screen home colours for the AMOLED.
-static constexpr uint16_t C_HOME_HEADER  = 0x0841;
-static constexpr uint16_t C_HOME_VISIT   = 0x149F;
-static constexpr uint16_t C_HOME_ROUND   = 0x04B4;
-static constexpr uint16_t C_HOME_MEETING = 0x2589;
-static constexpr uint16_t C_HOME_DIVIDER = 0xFFFF;
+// OurMind-inspired palette, based on the current public OurMind visual identity:
+// cobalt blue wordmark, pale lavender surfaces, white cards, dark navy text.
+static constexpr uint16_t C_OM_BG      = 0xDEDF;  // pale lavender
+static constexpr uint16_t C_OM_BLUE    = 0x225D;  // cobalt
+static constexpr uint16_t C_OM_NAVY    = 0x1084;  // deep navy
+static constexpr uint16_t C_OM_WHITE   = 0xFFFF;
+static constexpr uint16_t C_OM_CARD    = 0xF7BF;  // warm white
+static constexpr uint16_t C_OM_SOFT    = 0xEF5F;  // soft lavender-white
+static constexpr uint16_t C_OM_LINE    = 0xADBF;  // periwinkle
+static constexpr uint16_t C_OM_GREEN   = 0x35CF;
+static constexpr uint16_t C_OM_RED     = 0xEA4B;
+static constexpr uint16_t C_OM_AMBER   = 0xF527;
+static constexpr uint16_t C_OM_MUTED   = 0x6B6D;
 
 Arduino_DataBus *displayBus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
@@ -81,17 +77,17 @@ struct Rect {
   }
 };
 
-// Compact title bar + three equal full-width mode buttons.
-static const Rect HOME_VISIT   {0, 48, 280, 136};
-static const Rect HOME_ROUND   {0, 184, 280, 136};
-static const Rect HOME_MEETING {0, 320, 280, 136};
+// Home: compact branded masthead + three large equal cards.
+static const Rect HOME_VISIT   {14, 78, 252, 112};
+static const Rect HOME_ROUND   {14, 200, 252, 112};
+static const Rect HOME_MEETING {14, 322, 252, 112};
 
-static const Rect CONF_START   {18, 282, 244, 66};
-static const Rect CONF_BACK    {18, 362, 244, 50};
-static const Rect REC_PRIVACY  {12, 316, 124, 70};
-static const Rect REC_MARKER   {144, 316, 124, 70};
-static const Rect REC_STOP     {12, 396, 256, 48};
-static const Rect DONE_BACK    {18, 350, 244, 58};
+static const Rect CONF_START   {14, 300, 252, 72};
+static const Rect CONF_BACK    {14, 386, 252, 54};
+static const Rect REC_PRIVACY  {14, 300, 120, 70};
+static const Rect REC_MARKER   {146, 300, 120, 70};
+static const Rect REC_STOP     {14, 382, 252, 60};
+static const Rect DONE_BACK    {14, 346, 252, 72};
 
 enum class AppState : uint8_t {
   HOME,
@@ -123,9 +119,8 @@ uint16_t markerCount = 0;
 uint16_t patientNumber = 1;
 char currentLogPath[96] = {0};
 
-// Dynamic recording fields are updated independently. This is important on
-// the AMOLED: repainting the whole 280x456 display several times per second
-// caused the very visible flashing in v0.2.
+// Only dynamic recording fields are refreshed while recording. Full-screen
+// repaints caused visible AMOLED flicker in the first prototype.
 uint32_t lastDisplayedSecond = 0xFFFFFFFFUL;
 
 const char *modeTitle(Mode mode) {
@@ -152,8 +147,8 @@ void textAt(int x, int y, const char *text, uint16_t color, uint8_t size = 1) {
   gfx->print(text);
 }
 
-// Arduino_GFX's built-in bitmap font has no bold face. Drawing the glyph one
-// pixel to the right and down gives a crisp, visibly heavier label on AMOLED.
+// Built-in Arduino_GFX font has no bold weight. Layering the same glyph a
+// pixel to the right/down gives a distinctly heavier, still crisp label.
 void textAtBold(int x, int y, const char *text, uint16_t color, uint8_t size = 1) {
   textAt(x, y, text, color, size);
   textAt(x + 1, y, text, color, size);
@@ -174,62 +169,95 @@ void centeredBold(int y, const char *text, uint16_t color, uint8_t size = 1) {
   textAtBold(x, y, text, color, size);
 }
 
+void roundedCard(const Rect &r, uint16_t fill, uint16_t border) {
+  gfx->fillRoundRect(r.x, r.y, r.w, r.h, 18, fill);
+  gfx->drawRoundRect(r.x, r.y, r.w, r.h, 18, border);
+  gfx->drawRoundRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2, 17, border);
+}
+
 void button(const Rect &r, const char *label, uint16_t fill, uint16_t border,
             uint16_t textColor, uint8_t textSize = 2) {
-  gfx->fillRoundRect(r.x, r.y, r.w, r.h, 12, fill);
-  gfx->drawRoundRect(r.x, r.y, r.w, r.h, 12, border);
+  roundedCard(r, fill, border);
   int width = (int)strlen(label) * 6 * textSize;
   int x = r.x + (r.w - width) / 2;
   int y = r.y + (r.h - 8 * textSize) / 2;
   textAtBold(x, y, label, textColor, textSize);
 }
 
-void drawHeader(const char *right = nullptr) {
-  textAt(16, 14, "VisiteScribe", C_WHITE, 2);
-  textAt(16, 37, "MINI prototype", C_MUTED, 1);
-  if (right) {
-    int width = (int)strlen(right) * 6;
-    textAt(SCREEN_W - 16 - width, 19, right, C_MUTED, 1);
+// Small vector recreation of the public OurMind knot mark. For a final
+// branded production/demo unit this can be replaced by the official supplied
+// logo asset without changing the rest of the UI.
+void drawOurMindMark(int cx, int cy, uint16_t color) {
+  const int t = 3;
+  // upper loop
+  gfx->drawRoundRect(cx - 5, cy - 15, 10, 18, 5, color);
+  gfx->drawRoundRect(cx - 4, cy - 14, 8, 16, 4, color);
+  // lower loop
+  gfx->drawRoundRect(cx - 5, cy - 2, 10, 18, 5, color);
+  gfx->drawRoundRect(cx - 4, cy - 1, 8, 16, 4, color);
+  // left loop
+  gfx->drawRoundRect(cx - 15, cy - 5, 18, 10, 5, color);
+  gfx->drawRoundRect(cx - 14, cy - 4, 16, 8, 4, color);
+  // right loop
+  gfx->drawRoundRect(cx - 2, cy - 5, 18, 10, 5, color);
+  gfx->drawRoundRect(cx - 1, cy - 4, 16, 8, 4, color);
+  gfx->fillRect(cx - t / 2, cy - 7, t, 14, color);
+  gfx->fillRect(cx - 7, cy - t / 2, 14, t, color);
+}
+
+void drawBrandHeader(const char *status = nullptr) {
+  gfx->fillRect(0, 0, SCREEN_W, 66, C_OM_WHITE);
+
+  // Keep logo + wordmark centered as one visual unit.
+  const int groupX = 79;
+  drawOurMindMark(groupX + 13, 24, C_OM_BLUE);
+  textAtBold(groupX + 31, 14, "OurMind", C_OM_BLUE, 2);
+  centeredBold(42, "VISITESCRIBE DEMO", C_OM_NAVY, 1);
+
+  if (status) {
+    int width = (int)strlen(status) * 6;
+    int x = SCREEN_W - 8 - width;
+    gfx->fillRoundRect(x - 5, 5, width + 10, 20, 8, C_OM_SOFT);
+    textAtBold(x, 11, status, C_OM_NAVY, 1);
   }
-  gfx->drawFastHLine(16, 57, 248, C_PANEL2);
+
+  gfx->drawFastHLine(0, 65, SCREEN_W, C_OM_LINE);
 }
 
 void drawHomeMode(const Rect &r, const char *label, const char *subtitle,
-                  uint16_t fill) {
-  gfx->fillRect(r.x, r.y, r.w, r.h, fill);
-  gfx->drawFastHLine(0, r.y, SCREEN_W, C_HOME_DIVIDER);
+                  const char *number) {
+  roundedCard(r, C_OM_CARD, C_OM_LINE);
 
-  int labelWidth = (int)strlen(label) * 18;  // size 3
-  int labelX = (SCREEN_W - labelWidth) / 2;
-  textAtBold(labelX, r.y + 42, label, C_WHITE, 3);
+  gfx->fillRoundRect(r.x + 12, r.y + 14, 36, 28, 12, C_OM_BLUE);
+  textAtBold(r.x + 23, r.y + 22, number, C_OM_WHITE, 1);
 
-  int subWidth = (int)strlen(subtitle) * 6;
-  int subX = (SCREEN_W - subWidth) / 2;
-  textAtBold(subX, r.y + 84, subtitle, C_WHITE, 1);
+  centeredBold(r.y + 48, label, C_OM_BLUE, 3);
+  centeredBold(r.y + 84, subtitle, C_OM_NAVY, 1);
 }
 
 void drawHome() {
-  gfx->fillScreen(C_BG);
-  gfx->fillRect(0, 0, SCREEN_W, 48, C_HOME_HEADER);
-  centeredBold(15, "VisiteScribe", C_CYAN, 2);
-  textAtBold(244, 20, sdOk ? "SD" : "--", sdOk ? C_GREEN : C_AMBER, 1);
+  gfx->fillScreen(C_OM_BG);
+  drawBrandHeader(sdOk ? "SD" : "--");
 
-  drawHomeMode(HOME_VISIT, "VISITE", "1 patient", C_HOME_VISIT);
-  drawHomeMode(HOME_ROUND, "PATIENTRONDE", "meerdere patienten", C_HOME_ROUND);
-  drawHomeMode(HOME_MEETING, "VERGADERING", "overleg / bespreking", C_HOME_MEETING);
-  gfx->drawFastHLine(0, SCREEN_H - 1, SCREEN_W, C_HOME_DIVIDER);
+  drawHomeMode(HOME_VISIT, "VISITE", "1 patient", "1");
+  drawHomeMode(HOME_ROUND, "PATIENTRONDE", "meerdere patienten", "2");
+  drawHomeMode(HOME_MEETING, "VERGADERING", "overleg / bespreking", "3");
 }
 
 void drawConfirm() {
-  gfx->fillScreen(C_BG);
-  drawHeader(sdOk ? "SD OK" : "SD --");
-  centeredBold(88, modeTitle(selectedMode), C_WHITE, 2);
-  centeredBold(134, "DEMO-OPNAME", C_AMBER, 2);
-  centered(176, "Er wordt nog geen audio opgenomen.", C_MUTED, 1);
-  centered(194, "Wel testen we touch, workflow", C_MUTED, 1);
-  centered(210, "en opslag op microSD.", C_MUTED, 1);
-  button(CONF_START, "START DEMO", C_GREEN, C_GREEN, C_BG, 2);
-  button(CONF_BACK, "TERUG", C_PANEL, C_MUTED, C_WHITE, 2);
+  gfx->fillScreen(C_OM_BG);
+  drawBrandHeader(sdOk ? "SD" : "--");
+
+  Rect card{14, 82, 252, 196};
+  roundedCard(card, C_OM_CARD, C_OM_LINE);
+  centeredBold(108, modeTitle(selectedMode), C_OM_BLUE, 2);
+  centeredBold(150, "DEMO-OPNAME", C_OM_NAVY, 2);
+  centered(195, "Nog geen microfoon aangesloten.", C_OM_MUTED, 1);
+  centered(214, "Touch, workflow en microSD", C_OM_MUTED, 1);
+  centered(232, "worden wel echt getest.", C_OM_MUTED, 1);
+
+  button(CONF_START, "START DEMO", C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
+  button(CONF_BACK, "TERUG", C_OM_CARD, C_OM_LINE, C_OM_NAVY, 2);
 }
 
 void formatElapsed(char *out, size_t len) {
@@ -246,68 +274,73 @@ void drawRecordingDynamic(bool force = false) {
   if (!force && second == lastDisplayedSecond) return;
   lastDisplayedSecond = second;
 
-  // Only repaint the timer rectangle, never the complete screen.
-  gfx->fillRect(22, 108, 236, 42, C_BG);
+  // Only repaint the timer interior; the rest remains untouched and flicker-free.
+  gfx->fillRect(28, 120, 224, 42, C_OM_CARD);
   char elapsed[16];
   formatElapsed(elapsed, sizeof(elapsed));
-  centeredBold(116, elapsed, C_WHITE, 3);
+  centeredBold(123, elapsed, C_OM_NAVY, 3);
 }
 
 void drawRecording() {
-  gfx->fillScreen(C_BG);
-  drawHeader("REC DEMO");
-  centeredBold(78, modeTitle(selectedMode), C_WHITE, 2);
+  gfx->fillScreen(C_OM_BG);
+  drawBrandHeader("REC");
 
-  // Deliberately static until a real microphone is attached. The old demo VU
-  // animation forced full-screen redraws and therefore produced AMOLED flicker.
-  gfx->drawRoundRect(18, 166, 244, 84, 14, C_PANEL2);
-  centeredBold(185, "DEMO", C_AMBER, 2);
-  centered(218, "GEEN AUDIO", C_MUTED, 1);
+  Rect timerCard{14, 82, 252, 120};
+  roundedCard(timerCard, C_OM_CARD, C_OM_LINE);
+  centeredBold(96, modeTitle(selectedMode), C_OM_BLUE, 2);
 
+  Rect infoCard{14, 214, 252, 66};
+  roundedCard(infoCard, C_OM_SOFT, C_OM_LINE);
   if (selectedMode == Mode::ROUND) {
     char p[32];
     snprintf(p, sizeof(p), "PATIENT %u", patientNumber);
-    centeredBold(275, p, C_CYAN, 2);
+    centeredBold(236, p, C_OM_BLUE, 2);
   } else {
     char m[32];
     snprintf(m, sizeof(m), "MARKERS %u", markerCount);
-    centeredBold(275, m, C_CYAN, 2);
+    centeredBold(236, m, C_OM_BLUE, 2);
   }
 
-  button(REC_PRIVACY, "PRIVACY", C_PANEL, C_AMBER, C_WHITE, 2);
+  button(REC_PRIVACY, "PRIVACY", C_OM_CARD, C_OM_AMBER, C_OM_NAVY, 2);
   button(REC_MARKER,
          selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER",
-         C_PANEL, C_CYAN, C_WHITE, 2);
-  button(REC_STOP, "STOP", C_RED, C_RED, C_WHITE, 2);
+         C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
+  button(REC_STOP, "STOP", C_OM_RED, C_OM_RED, C_OM_WHITE, 2);
 
   lastDisplayedSecond = 0xFFFFFFFFUL;
   drawRecordingDynamic(true);
 }
 
 void drawPaused() {
-  gfx->fillScreen(C_BG);
-  drawHeader("PAUZE");
-  centeredBold(92, "PRIVACY PAUZE", C_AMBER, 2);
-  centeredBold(137, "GEEN AUDIO", C_RED, 3);
-  centered(190, "De microfoon staat hier", C_MUTED, 1);
-  centered(207, "in de echte recorder fysiek stil.", C_MUTED, 1);
+  gfx->fillScreen(C_OM_BG);
+  drawBrandHeader("PAUZE");
+
+  Rect card{14, 82, 252, 198};
+  roundedCard(card, C_OM_CARD, C_OM_LINE);
+  centeredBold(108, "PRIVACY PAUZE", C_OM_AMBER, 2);
+  centeredBold(148, "GEEN AUDIO", C_OM_RED, 3);
+  centered(194, "De microfoon staat hier", C_OM_MUTED, 1);
+  centered(212, "in de echte recorder fysiek stil.", C_OM_MUTED, 1);
 
   char elapsed[16];
   formatElapsed(elapsed, sizeof(elapsed));
-  centeredBold(251, elapsed, C_WHITE, 2);
+  centeredBold(242, elapsed, C_OM_NAVY, 2);
 
-  button(REC_PRIVACY, "HERVAT", C_GREEN, C_GREEN, C_BG, 2);
+  button(REC_PRIVACY, "HERVAT", C_OM_GREEN, C_OM_GREEN, C_OM_WHITE, 2);
   button(REC_MARKER,
          selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER",
-         C_PANEL, C_CYAN, C_WHITE, 2);
-  button(REC_STOP, "STOP", C_RED, C_RED, C_WHITE, 2);
+         C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
+  button(REC_STOP, "STOP", C_OM_RED, C_OM_RED, C_OM_WHITE, 2);
 }
 
 void drawFinished() {
-  gfx->fillScreen(C_BG);
-  drawHeader(sdOk ? "SD OK" : "SD --");
-  centeredBold(112, "OPGESLAGEN", C_GREEN, 2);
-  centeredBold(153, "DEMO SESSIE KLAAR", C_WHITE, 2);
+  gfx->fillScreen(C_OM_BG);
+  drawBrandHeader(sdOk ? "SD" : "--");
+
+  Rect card{14, 92, 252, 220};
+  roundedCard(card, C_OM_CARD, C_OM_LINE);
+  centeredBold(122, "OPGESLAGEN", C_OM_GREEN, 2);
+  centeredBold(160, "DEMO SESSIE KLAAR", C_OM_NAVY, 2);
 
   char info[48];
   if (selectedMode == Mode::ROUND) {
@@ -316,16 +349,15 @@ void drawFinished() {
   } else {
     snprintf(info, sizeof(info), "%u markers", markerCount);
   }
-  centered(210, info, C_MUTED, 1);
-  centered(242,
+  centeredBold(215, info, C_OM_BLUE, 1);
+  centered(248,
            sdOk ? "events staan op microSD" : "geen SD-log geschreven",
-           sdOk ? C_GREEN : C_AMBER, 1);
+           sdOk ? C_OM_GREEN : C_OM_AMBER, 1);
 
-  button(DONE_BACK, "NIEUWE OPNAME", C_PANEL, C_BLUE, C_WHITE, 1);
+  button(DONE_BACK, "NIEUWE OPNAME", C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
 }
 
 void render(bool force = false) {
-  // Recording is special: without a state/UI change we update only the timer.
   if (state == AppState::RECORDING && !screenDirty && !force) {
     drawRecordingDynamic(false);
     return;
@@ -410,8 +442,7 @@ void startDemo() {
            "/visitescribe/demo_%08lx.csv",
            (unsigned long)sessionStartedMs);
 
-  // Give immediate visual feedback before touching the SD card. On some cards
-  // opening/creating a file can take a perceptible fraction of a second.
+  // Immediate visual response before SD I/O.
   state = AppState::RECORDING;
   screenDirty = true;
   render(true);
@@ -527,7 +558,7 @@ void setup() {
   Serial.begin(115200);
   delay(400);
   Serial.println();
-  Serial.println("VisiteScribe MINI - Waveshare AMOLED UI demo v0.3");
+  Serial.println("VisiteScribe MINI - OurMind branded Waveshare demo v0.4");
   Serial.printf("Board revision target: V%d\n", VISITESCRIBE_BOARD_REV);
 
   pinMode(VISITESCRIBE_BOOT_GPIO, INPUT_PULLUP);
@@ -535,7 +566,7 @@ void setup() {
   if (!gfx->begin()) {
     Serial.println("ERROR: display init failed");
   }
-  gfx->fillScreen(C_BG);
+  gfx->fillScreen(C_OM_BG);
 
   initTouch();
   sdOk = initSD();
