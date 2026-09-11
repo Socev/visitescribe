@@ -51,6 +51,13 @@ static constexpr uint16_t C_AMBER   = 0xFD20;
 static constexpr uint16_t C_BLUE    = 0x3DDF;
 static constexpr uint16_t C_CYAN    = 0x4FFF;
 
+// Stronger full-screen home colours for the AMOLED.
+static constexpr uint16_t C_HOME_HEADER  = 0x0841;
+static constexpr uint16_t C_HOME_VISIT   = 0x149F;
+static constexpr uint16_t C_HOME_ROUND   = 0x04B4;
+static constexpr uint16_t C_HOME_MEETING = 0x2589;
+static constexpr uint16_t C_HOME_DIVIDER = 0xFFFF;
+
 Arduino_DataBus *displayBus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
 Arduino_GFX *gfx = new Arduino_CO5300(
@@ -77,9 +84,12 @@ struct Rect {
   }
 };
 
-static const Rect HOME_VISIT  {18, 124, 244, 58};
-static const Rect HOME_ROUND  {18, 196, 244, 58};
-static const Rect HOME_MEETING{18, 268, 244, 58};
+// Home screen: a compact 48px title bar plus exactly three equal 136px
+// touch areas that consume the rest of the 280x456 display.
+static const Rect HOME_VISIT  {0, 48, 280, 136};
+static const Rect HOME_ROUND  {0, 184, 280, 136};
+static const Rect HOME_MEETING{0, 320, 280, 136};
+
 static const Rect CONF_START  {18, 282, 244, 66};
 static const Rect CONF_BACK   {18, 362, 244, 50};
 static const Rect REC_PRIVACY {16, 326, 120, 62};
@@ -168,19 +178,32 @@ void drawHeader(const char *right = nullptr) {
   gfx->drawFastHLine(16, 57, 248, C_PANEL2);
 }
 
+void drawHomeMode(const Rect &r, const char *label, const char *subtitle, uint16_t fill) {
+  gfx->fillRect(r.x, r.y, r.w, r.h, fill);
+  gfx->drawFastHLine(0, r.y, SCREEN_W, C_HOME_DIVIDER);
+
+  int labelWidth = (int)strlen(label) * 18;  // 6 px glyph width * size 3
+  int labelX = (SCREEN_W - labelWidth) / 2;
+  textAt(labelX, r.y + 43, label, C_WHITE, 3);
+
+  int subWidth = (int)strlen(subtitle) * 6;
+  int subX = (SCREEN_W - subWidth) / 2;
+  textAt(subX, r.y + 82, subtitle, C_WHITE, 1);
+}
+
 void drawHome() {
   gfx->fillScreen(C_BG);
-  drawHeader(sdOk ? "SD OK" : "SD --");
-  centered(78, "Kies opnamemodus", C_MUTED, 1);
 
-  button(HOME_VISIT, "VISITE", C_PANEL, C_BLUE, C_WHITE, 2);
-  button(HOME_ROUND, "PATIENTRONDE", C_PANEL, C_CYAN, C_WHITE, 2);
-  button(HOME_MEETING, "VERGADERING", C_PANEL, C_GREEN, C_WHITE, 2);
+  // Compact title bar. The title remains geometrically centered even with
+  // the tiny SD status at the right edge.
+  gfx->fillRect(0, 0, SCREEN_W, 48, C_HOME_HEADER);
+  centered(16, "VisiteScribe", C_CYAN, 2);
+  textAt(244, 20, sdOk ? "SD" : "--", sdOk ? C_GREEN : C_AMBER, 1);
 
-  centered(350, "Touch-interface actief", C_GREEN, 1);
-  centered(371, "MICROFOON: NOG NIET AANGESLOTEN", C_AMBER, 1);
-  centered(410, "BOOT lang = noodstop", C_MUTED, 1);
-  centered(428, "UI demo v0.1", C_MUTED, 1);
+  drawHomeMode(HOME_VISIT, "VISITE", "1 patient", C_HOME_VISIT);
+  drawHomeMode(HOME_ROUND, "PATIENTRONDE", "meerdere patienten", C_HOME_ROUND);
+  drawHomeMode(HOME_MEETING, "VERGADERING", "overleg / bespreking", C_HOME_MEETING);
+  gfx->drawFastHLine(0, SCREEN_H - 1, SCREEN_W, C_HOME_DIVIDER);
 }
 
 void drawConfirm() {
@@ -480,7 +503,7 @@ void setup() {
   Serial.begin(115200);
   delay(400);
   Serial.println();
-  Serial.println("VisiteScribe MINI - Waveshare AMOLED UI demo v0.1");
+  Serial.println("VisiteScribe MINI - Waveshare AMOLED UI demo v0.2");
   Serial.printf("Board revision target: V%d\n", VISITESCRIBE_BOARD_REV);
 
   pinMode(VISITESCRIBE_BOOT_GPIO, INPUT_PULLUP);
