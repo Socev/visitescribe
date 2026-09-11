@@ -3,12 +3,26 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
+#include <WiFi.h>
+
+#if __has_include("wifi_secrets.h")
+#include "wifi_secrets.h"
+#define VISITESCRIBE_WIFI_CONFIGURED 1
+#else
+#define VISITESCRIBE_WIFI_CONFIGURED 0
+#define VISITESCRIBE_WIFI_SSID_1 ""
+#define VISITESCRIBE_WIFI_PASSWORD_1 ""
+#define VISITESCRIBE_WIFI_SSID_2 ""
+#define VISITESCRIBE_WIFI_PASSWORD_2 ""
+#endif
 
 #ifndef VISITESCRIBE_BOARD_REV
 #define VISITESCRIBE_BOARD_REV 2
 #endif
 
-// Waveshare ESP32-S3-Touch-AMOLED-1.64
+// -----------------------------------------------------------------------------
+// Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.64
+// -----------------------------------------------------------------------------
 #if VISITESCRIBE_BOARD_REV == 2
 static constexpr int LCD_CS = 46;
 #else
@@ -23,46 +37,44 @@ static constexpr int LCD_D3 = 14;
 static constexpr int LCD_RST = 21;
 static constexpr int SCREEN_W = 280;
 static constexpr int SCREEN_H = 456;
+static constexpr int HEADER_H = 64;
 
 static constexpr int TOUCH_SDA = 47;
 static constexpr int TOUCH_SCL = 48;
 static constexpr uint8_t TOUCH_ADDR = 0x38;
 
-// V2 official Waveshare SD/SPI pinout.
 static constexpr int SD_MISO = 40;
 static constexpr int SD_MOSI = 39;
 static constexpr int SD_SCLK = 41;
 static constexpr int SD_CS = 38;
 
-// GPIO0 is the physical BOOT button. Arduino-ESP32 already owns BOOT_PIN.
+static constexpr int BAT_ADC_GPIO = 4;  // BAT_ADC via onboard 200k/100k divider
+static constexpr float BAT_DIVIDER = 3.0f;
 static constexpr int VISITESCRIBE_BOOT_GPIO = 0;
 
-// OurMind-inspired palette, based on the current public OurMind visual identity:
-// cobalt blue wordmark, pale lavender surfaces, white cards, dark navy text.
-static constexpr uint16_t C_OM_BG      = 0xDEDF;  // pale lavender
-static constexpr uint16_t C_OM_BLUE    = 0x225D;  // cobalt
-static constexpr uint16_t C_OM_NAVY    = 0x1084;  // deep navy
-static constexpr uint16_t C_OM_WHITE   = 0xFFFF;
-static constexpr uint16_t C_OM_CARD    = 0xF7BF;  // warm white
-static constexpr uint16_t C_OM_SOFT    = 0xEF5F;  // soft lavender-white
-static constexpr uint16_t C_OM_LINE    = 0xADBF;  // periwinkle
-static constexpr uint16_t C_OM_GREEN   = 0x35CF;
-static constexpr uint16_t C_OM_RED     = 0xEA4B;
-static constexpr uint16_t C_OM_AMBER   = 0xF527;
-static constexpr uint16_t C_OM_MUTED   = 0x6B6D;
+// -----------------------------------------------------------------------------
+// OurMind-inspired palette. Large solid colour zones are intentional: this UI
+// is designed for daily use with one-handed, imprecise taps rather than tiny UI.
+// -----------------------------------------------------------------------------
+static constexpr uint16_t C_BG       = 0xDEDF;
+static constexpr uint16_t C_BLUE     = 0x225D;
+static constexpr uint16_t C_BLUE2    = 0x3B7F;
+static constexpr uint16_t C_VIOLET   = 0x633D;
+static constexpr uint16_t C_TEAL     = 0x2575;
+static constexpr uint16_t C_NAVY     = 0x1084;
+static constexpr uint16_t C_WHITE    = 0xFFFF;
+static constexpr uint16_t C_SOFT     = 0xEF5F;
+static constexpr uint16_t C_LINE     = 0xADBF;
+static constexpr uint16_t C_GREEN    = 0x35CF;
+static constexpr uint16_t C_RED      = 0xEA4B;
+static constexpr uint16_t C_AMBER    = 0xFD47;
+static constexpr uint16_t C_MUTED    = 0x6B6D;
+static constexpr uint16_t C_DARKGREY = 0x39E7;
 
 Arduino_DataBus *displayBus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
 Arduino_GFX *gfx = new Arduino_CO5300(
-    displayBus,
-    LCD_RST,
-    0,
-    SCREEN_W,
-    SCREEN_H,
-    20,
-    0,
-    180,
-    24);
+    displayBus, LCD_RST, 0, SCREEN_W, SCREEN_H, 20, 0, 180, 24);
 
 SPIClass sdSPI(HSPI);
 
@@ -71,30 +83,43 @@ struct Rect {
   int y;
   int w;
   int h;
-
   bool contains(uint16_t px, uint16_t py) const {
     return px >= x && px < x + w && py >= y && py < y + h;
   }
 };
 
-// Home: compact branded masthead + three large equal cards.
-static const Rect HOME_VISIT   {14, 78, 252, 112};
-static const Rect HOME_ROUND   {14, 200, 252, 112};
-static const Rect HOME_MEETING {14, 322, 252, 112};
+// Four equal main-menu buttons below the 64px status bar.
+static const Rect HOME_VISIT   {0,  64, 280, 98};
+static const Rect HOME_ROUND   {0, 162, 280, 98};
+static const Rect HOME_MEETING {0, 260, 280, 98};
+static const Rect HOME_MENU    {0, 358, 280, 98};
 
-static const Rect CONF_START   {14, 300, 252, 72};
-static const Rect CONF_BACK    {14, 386, 252, 54};
-static const Rect REC_PRIVACY  {14, 300, 120, 70};
-static const Rect REC_MARKER   {146, 300, 120, 70};
-static const Rect REC_STOP     {14, 382, 252, 60};
-static const Rect DONE_BACK    {14, 346, 252, 72};
+// Two huge buttons: 196px each.
+static const Rect TWO_TOP      {0,  64, 280, 196};
+static const Rect TWO_BOTTOM   {0, 260, 280, 196};
+
+// Three huge buttons: ~1/3 of all usable display space each.
+static const Rect THREE_TOP    {0,  64, 280, 131};
+static const Rect THREE_MIDDLE {0, 195, 280, 131};
+static const Rect THREE_BOTTOM {0, 326, 280, 130};
+
+// Status screen reserves most of the display for information and keeps one
+// enormous back button.
+static const Rect STATUS_BACK  {0, 348, 280, 108};
+
+// Sync screen keeps a large information field plus two generous actions.
+static const Rect SYNC_RETRY   {0, 260, 280, 98};
+static const Rect SYNC_BACK    {0, 358, 280, 98};
 
 enum class AppState : uint8_t {
   HOME,
-  CONFIRM,
+  MODE_CONFIRM,
   RECORDING,
   PAUSED,
-  FINISHED
+  FINISHED,
+  MENU,
+  STATUS,
+  SYNC
 };
 
 enum class Mode : uint8_t {
@@ -103,26 +128,198 @@ enum class Mode : uint8_t {
   MEETING
 };
 
+enum class SyncPhase : uint8_t {
+  NOT_STARTED,
+  NO_CREDENTIALS,
+  CONNECTING_1,
+  CONNECTING_2,
+  CONNECTED,
+  FAILED
+};
+
 AppState state = AppState::HOME;
 Mode selectedMode = Mode::VISIT;
+SyncPhase syncPhase = SyncPhase::NOT_STARTED;
 
 bool sdOk = false;
 bool touchWasDown = false;
 bool screenDirty = true;
+bool bootWasDown = false;
+uint32_t bootPressedAtMs = 0;
+
 uint32_t sessionStartedMs = 0;
 uint32_t pauseStartedMs = 0;
 uint32_t totalPausedMs = 0;
 uint32_t finishedAtMs = 0;
-uint32_t bootPressedAtMs = 0;
-bool bootWasDown = false;
 uint16_t markerCount = 0;
 uint16_t patientNumber = 1;
 char currentLogPath[96] = {0};
 
-// Only dynamic recording fields are refreshed while recording. Full-screen
-// repaints caused visible AMOLED flicker in the first prototype.
 uint32_t lastDisplayedSecond = 0xFFFFFFFFUL;
+uint32_t lastFinishedCountdown = 0xFFFFFFFFUL;
+static constexpr uint32_t FINISHED_AUTO_HOME_MS = 8000;
 
+int batteryPercent = -1;
+uint16_t batteryMv = 0;
+uint32_t lastBatteryReadMs = 0;
+int lastBatteryUiPercent = -999;
+
+uint32_t syncAttemptStartedMs = 0;
+uint8_t syncNetwork = 0;
+static constexpr uint32_t WIFI_ATTEMPT_MS = 6500;
+
+// -----------------------------------------------------------------------------
+// Text and drawing helpers
+// -----------------------------------------------------------------------------
+void textAt(int x, int y, const char *text, uint16_t color, uint8_t size = 1) {
+  gfx->setTextColor(color);
+  gfx->setTextSize(size);
+  gfx->setCursor(x, y);
+  gfx->print(text);
+}
+
+void textAtBold(int x, int y, const char *text, uint16_t color, uint8_t size = 1) {
+  // Heavy enough to remain legible on the small high-density AMOLED.
+  textAt(x, y, text, color, size);
+  textAt(x + 1, y, text, color, size);
+  textAt(x, y + 1, text, color, size);
+  if (size >= 2) textAt(x + 1, y + 1, text, color, size);
+}
+
+void centeredBold(int y, const char *text, uint16_t color, uint8_t size = 1) {
+  int width = (int)strlen(text) * 6 * size;
+  int x = (SCREEN_W - width) / 2;
+  if (x < 2) x = 2;
+  textAtBold(x, y, text, color, size);
+}
+
+uint8_t bestLabelSize(const char *label) {
+  size_t n = strlen(label);
+  if (n <= 6) return 4;
+  if (n <= 13) return 3;
+  return 2;
+}
+
+void centeredInRect(const Rect &r, const char *text, uint16_t color, uint8_t size) {
+  int width = (int)strlen(text) * 6 * size;
+  int x = r.x + (r.w - width) / 2;
+  int y = r.y + (r.h - 8 * size) / 2;
+  if (x < 2) x = 2;
+  textAtBold(x, y, text, color, size);
+}
+
+void bigZone(const Rect &r, const char *label, uint16_t fill, uint16_t textColor,
+             const char *subtitle = nullptr) {
+  gfx->fillRect(r.x, r.y, r.w, r.h, fill);
+  gfx->drawFastHLine(r.x, r.y, r.w, C_WHITE);
+
+  uint8_t size = bestLabelSize(label);
+  if (subtitle && subtitle[0]) {
+    int width = (int)strlen(label) * 6 * size;
+    int x = r.x + (r.w - width) / 2;
+    int labelY = r.y + (r.h / 2) - 22;
+    if (x < 2) x = 2;
+    textAtBold(x, labelY, label, textColor, size);
+
+    int subWidth = (int)strlen(subtitle) * 6;
+    int subX = r.x + (r.w - subWidth) / 2;
+    if (subX < 2) subX = 2;
+    textAtBold(subX, labelY + 40, subtitle, textColor, 1);
+  } else {
+    centeredInRect(r, label, textColor, size);
+  }
+}
+
+void drawOurMindMarkMini(int cx, int cy, uint16_t color) {
+  gfx->drawRoundRect(cx - 3, cy - 9, 6, 11, 3, color);
+  gfx->drawRoundRect(cx - 3, cy - 1, 6, 11, 3, color);
+  gfx->drawRoundRect(cx - 9, cy - 3, 11, 6, 3, color);
+  gfx->drawRoundRect(cx - 1, cy - 3, 11, 6, 3, color);
+  gfx->fillRect(cx - 1, cy - 4, 2, 9, color);
+  gfx->fillRect(cx - 4, cy - 1, 9, 2, color);
+}
+
+// -----------------------------------------------------------------------------
+// Battery
+// The board schematic feeds VBAT through a 200k/100k divider to BAT_ADC, so
+// the ADC sees one third of battery voltage. Percentage is intentionally an
+// approximate LiPo resting-voltage estimate until we calibrate with the real
+// 1500/1800mAh packs.
+// -----------------------------------------------------------------------------
+int batteryPercentFromMv(uint16_t mv) {
+  struct Pt { uint16_t mv; uint8_t pct; };
+  static const Pt curve[] = {
+      {3300, 0}, {3500, 5}, {3600, 12}, {3680, 20}, {3740, 30},
+      {3790, 40}, {3830, 50}, {3870, 60}, {3920, 70}, {3980, 80},
+      {4070, 90}, {4200, 100}};
+
+  if (mv <= curve[0].mv) return 0;
+  if (mv >= curve[11].mv) return 100;
+  for (size_t i = 1; i < sizeof(curve) / sizeof(curve[0]); ++i) {
+    if (mv <= curve[i].mv) {
+      uint16_t spanMv = curve[i].mv - curve[i - 1].mv;
+      int spanPct = curve[i].pct - curve[i - 1].pct;
+      return curve[i - 1].pct +
+             ((int)(mv - curve[i - 1].mv) * spanPct) / spanMv;
+    }
+  }
+  return 100;
+}
+
+bool updateBattery(bool force = false) {
+  uint32_t now = millis();
+  if (!force && now - lastBatteryReadMs < 5000) return false;
+  lastBatteryReadMs = now;
+
+  uint32_t sum = 0;
+  for (int i = 0; i < 12; ++i) {
+    sum += analogReadMilliVolts(BAT_ADC_GPIO);
+    delay(2);
+  }
+  uint16_t adcMv = (uint16_t)(sum / 12);
+  uint16_t measured = (uint16_t)(adcMv * BAT_DIVIDER);
+
+  int oldPct = batteryPercent;
+  if (measured < 2800 || measured > 4500) {
+    batteryMv = 0;
+    batteryPercent = -1;
+  } else {
+    batteryMv = measured;
+    batteryPercent = batteryPercentFromMv(batteryMv);
+  }
+  return oldPct != batteryPercent;
+}
+
+void batteryText(char *out, size_t len) {
+  if (batteryPercent < 0) snprintf(out, len, "--%%");
+  else snprintf(out, len, "%d%%", batteryPercent);
+}
+
+void drawBatteryBadge() {
+  char b[12];
+  batteryText(b, sizeof(b));
+  gfx->fillRect(226, 2, 54, 20, C_WHITE);
+  int width = (int)strlen(b) * 6;
+  textAtBold(274 - width, 7, b,
+             (batteryPercent >= 0 && batteryPercent <= 15) ? C_RED : C_NAVY, 1);
+  lastBatteryUiPercent = batteryPercent;
+}
+
+void drawTopBar(const char *status, const char *subline = nullptr) {
+  gfx->fillRect(0, 0, SCREEN_W, HEADER_H, C_WHITE);
+  drawOurMindMarkMini(13, 13, C_BLUE);
+  textAtBold(29, 7, "OurMind", C_BLUE, 1);
+  drawBatteryBadge();
+
+  uint8_t statusSize = (strlen(status) <= 17) ? 2 : 1;
+  centeredBold(27, status, C_NAVY, statusSize);
+  if (subline && subline[0]) centeredBold(49, subline, C_MUTED, 1);
+  gfx->drawFastHLine(0, HEADER_H - 1, SCREEN_W, C_LINE);
+}
+
+// -----------------------------------------------------------------------------
+// Session helpers
+// -----------------------------------------------------------------------------
 const char *modeTitle(Mode mode) {
   switch (mode) {
     case Mode::VISIT: return "VISITE";
@@ -140,252 +337,304 @@ uint32_t activeElapsedMs() {
   return now - sessionStartedMs - paused;
 }
 
-void textAt(int x, int y, const char *text, uint16_t color, uint8_t size = 1) {
-  gfx->setTextColor(color);
-  gfx->setTextSize(size);
-  gfx->setCursor(x, y);
-  gfx->print(text);
-}
-
-// Built-in Arduino_GFX font has no bold weight. Layering the same glyph a
-// pixel to the right/down gives a distinctly heavier, still crisp label.
-void textAtBold(int x, int y, const char *text, uint16_t color, uint8_t size = 1) {
-  textAt(x, y, text, color, size);
-  textAt(x + 1, y, text, color, size);
-  if (size >= 2) textAt(x, y + 1, text, color, size);
-}
-
-void centered(int y, const char *text, uint16_t color, uint8_t size = 1) {
-  int width = (int)strlen(text) * 6 * size;
-  int x = (SCREEN_W - width) / 2;
-  if (x < 2) x = 2;
-  textAt(x, y, text, color, size);
-}
-
-void centeredBold(int y, const char *text, uint16_t color, uint8_t size = 1) {
-  int width = (int)strlen(text) * 6 * size;
-  int x = (SCREEN_W - width) / 2;
-  if (x < 2) x = 2;
-  textAtBold(x, y, text, color, size);
-}
-
-void roundedCard(const Rect &r, uint16_t fill, uint16_t border) {
-  gfx->fillRoundRect(r.x, r.y, r.w, r.h, 18, fill);
-  gfx->drawRoundRect(r.x, r.y, r.w, r.h, 18, border);
-  gfx->drawRoundRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2, 17, border);
-}
-
-void button(const Rect &r, const char *label, uint16_t fill, uint16_t border,
-            uint16_t textColor, uint8_t textSize = 2) {
-  roundedCard(r, fill, border);
-  int width = (int)strlen(label) * 6 * textSize;
-  int x = r.x + (r.w - width) / 2;
-  int y = r.y + (r.h - 8 * textSize) / 2;
-  textAtBold(x, y, label, textColor, textSize);
-}
-
-// Small vector recreation of the public OurMind knot mark. For a final
-// branded production/demo unit this can be replaced by the official supplied
-// logo asset without changing the rest of the UI.
-void drawOurMindMark(int cx, int cy, uint16_t color) {
-  const int t = 3;
-  // upper loop
-  gfx->drawRoundRect(cx - 5, cy - 15, 10, 18, 5, color);
-  gfx->drawRoundRect(cx - 4, cy - 14, 8, 16, 4, color);
-  // lower loop
-  gfx->drawRoundRect(cx - 5, cy - 2, 10, 18, 5, color);
-  gfx->drawRoundRect(cx - 4, cy - 1, 8, 16, 4, color);
-  // left loop
-  gfx->drawRoundRect(cx - 15, cy - 5, 18, 10, 5, color);
-  gfx->drawRoundRect(cx - 14, cy - 4, 16, 8, 4, color);
-  // right loop
-  gfx->drawRoundRect(cx - 2, cy - 5, 18, 10, 5, color);
-  gfx->drawRoundRect(cx - 1, cy - 4, 16, 8, 4, color);
-  gfx->fillRect(cx - t / 2, cy - 7, t, 14, color);
-  gfx->fillRect(cx - 7, cy - t / 2, 14, t, color);
-}
-
-void drawBrandHeader(const char *status = nullptr) {
-  gfx->fillRect(0, 0, SCREEN_W, 66, C_OM_WHITE);
-
-  // Keep logo + wordmark centered as one visual unit.
-  const int groupX = 79;
-  drawOurMindMark(groupX + 13, 24, C_OM_BLUE);
-  textAtBold(groupX + 31, 14, "OurMind", C_OM_BLUE, 2);
-  centeredBold(42, "VISITESCRIBE DEMO", C_OM_NAVY, 1);
-
-  if (status) {
-    int width = (int)strlen(status) * 6;
-    int x = SCREEN_W - 8 - width;
-    gfx->fillRoundRect(x - 5, 5, width + 10, 20, 8, C_OM_SOFT);
-    textAtBold(x, 11, status, C_OM_NAVY, 1);
-  }
-
-  gfx->drawFastHLine(0, 65, SCREEN_W, C_OM_LINE);
-}
-
-void drawHomeMode(const Rect &r, const char *label, const char *subtitle,
-                  const char *number) {
-  roundedCard(r, C_OM_CARD, C_OM_LINE);
-
-  gfx->fillRoundRect(r.x + 12, r.y + 14, 36, 28, 12, C_OM_BLUE);
-  textAtBold(r.x + 23, r.y + 22, number, C_OM_WHITE, 1);
-
-  centeredBold(r.y + 48, label, C_OM_BLUE, 3);
-  centeredBold(r.y + 84, subtitle, C_OM_NAVY, 1);
-}
-
-void drawHome() {
-  gfx->fillScreen(C_OM_BG);
-  drawBrandHeader(sdOk ? "SD" : "--");
-
-  drawHomeMode(HOME_VISIT, "VISITE", "1 patient", "1");
-  drawHomeMode(HOME_ROUND, "PATIENTRONDE", "meerdere patienten", "2");
-  drawHomeMode(HOME_MEETING, "VERGADERING", "overleg / bespreking", "3");
-}
-
-void drawConfirm() {
-  gfx->fillScreen(C_OM_BG);
-  drawBrandHeader(sdOk ? "SD" : "--");
-
-  Rect card{14, 82, 252, 196};
-  roundedCard(card, C_OM_CARD, C_OM_LINE);
-  centeredBold(108, modeTitle(selectedMode), C_OM_BLUE, 2);
-  centeredBold(150, "DEMO-OPNAME", C_OM_NAVY, 2);
-  centered(195, "Nog geen microfoon aangesloten.", C_OM_MUTED, 1);
-  centered(214, "Touch, workflow en microSD", C_OM_MUTED, 1);
-  centered(232, "worden wel echt getest.", C_OM_MUTED, 1);
-
-  button(CONF_START, "START DEMO", C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
-  button(CONF_BACK, "TERUG", C_OM_CARD, C_OM_LINE, C_OM_NAVY, 2);
-}
-
 void formatElapsed(char *out, size_t len) {
   uint32_t seconds = activeElapsedMs() / 1000;
-  uint32_t h = seconds / 3600;
-  uint32_t m = (seconds % 3600) / 60;
-  uint32_t s = seconds % 60;
   snprintf(out, len, "%02lu:%02lu:%02lu",
-           (unsigned long)h, (unsigned long)m, (unsigned long)s);
+           (unsigned long)(seconds / 3600),
+           (unsigned long)((seconds % 3600) / 60),
+           (unsigned long)(seconds % 60));
 }
 
-void drawRecordingDynamic(bool force = false) {
-  uint32_t second = activeElapsedMs() / 1000;
-  if (!force && second == lastDisplayedSecond) return;
-  lastDisplayedSecond = second;
+bool initSD() {
+  sdSPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS, sdSPI, 10000000)) return false;
+  if (SD.cardType() == CARD_NONE) return false;
+  if (!SD.exists("/visitescribe")) SD.mkdir("/visitescribe");
 
-  // Only repaint the timer interior; the rest remains untouched and flicker-free.
-  gfx->fillRect(28, 120, 224, 42, C_OM_CARD);
-  char elapsed[16];
-  formatElapsed(elapsed, sizeof(elapsed));
-  centeredBold(123, elapsed, C_OM_NAVY, 3);
+  File boot = SD.open("/visitescribe/boot.log", FILE_APPEND);
+  if (boot) {
+    boot.printf("boot_ms=%lu board_rev=%d\n",
+                (unsigned long)millis(), VISITESCRIBE_BOARD_REV);
+    boot.close();
+  }
+  return true;
+}
+
+uint16_t countDemoSessions() {
+  if (!sdOk) return 0;
+  uint16_t count = 0;
+  File root = SD.open("/visitescribe");
+  if (!root) return 0;
+  File f = root.openNextFile();
+  while (f) {
+    if (!f.isDirectory()) {
+      String name = f.name();
+      if (name.endsWith(".csv")) count++;
+    }
+    f.close();
+    f = root.openNextFile();
+  }
+  root.close();
+  return count;
+}
+
+void logEventAt(const char *eventName, uint32_t offsetMs) {
+  if (!sdOk || currentLogPath[0] == '\0') return;
+  File f = SD.open(currentLogPath, FILE_APPEND);
+  if (!f) return;
+  f.printf("%lu,%s,%u,%u\n",
+           (unsigned long)offsetMs, eventName, patientNumber, markerCount);
+  f.flush();
+  f.close();
+}
+
+void goHome() {
+  state = AppState::HOME;
+  sessionStartedMs = 0;
+  pauseStartedMs = 0;
+  totalPausedMs = 0;
+  finishedAtMs = 0;
+  markerCount = 0;
+  patientNumber = 1;
+  currentLogPath[0] = '\0';
+  screenDirty = true;
+  lastDisplayedSecond = 0xFFFFFFFFUL;
+  lastFinishedCountdown = 0xFFFFFFFFUL;
+}
+
+// -----------------------------------------------------------------------------
+// Screens
+// -----------------------------------------------------------------------------
+void drawHome() {
+  gfx->fillScreen(C_BG);
+  drawTopBar("HOOFDMENU");
+  bigZone(HOME_VISIT, "VISITE", C_BLUE, C_WHITE, "1 patient");
+  bigZone(HOME_ROUND, "PATIENTRONDE", C_VIOLET, C_WHITE, "meerdere patienten");
+  bigZone(HOME_MEETING, "VERGADERING", C_TEAL, C_WHITE, "overleg / bespreking");
+  bigZone(HOME_MENU, "MENU", C_NAVY, C_WHITE, "status en sync");
+}
+
+void drawModeConfirm() {
+  gfx->fillScreen(C_BG);
+  drawTopBar(modeTitle(selectedMode));
+  bigZone(TWO_TOP, "START", C_GREEN, C_WHITE);
+  bigZone(TWO_BOTTOM, "TERUG", C_NAVY, C_WHITE);
+}
+
+void recordingHeader(char *status, size_t statusLen) {
+  if (selectedMode == Mode::ROUND) {
+    snprintf(status, statusLen, "OPNAME PATIENT %u", patientNumber);
+  } else if (selectedMode == Mode::VISIT) {
+    snprintf(status, statusLen, "OPNAME VISITE");
+  } else {
+    snprintf(status, statusLen, "OPNAME VERGADERING");
+  }
+}
+
+void pausedHeader(char *status, size_t statusLen) {
+  if (selectedMode == Mode::ROUND) {
+    snprintf(status, statusLen, "PRIVACY PAUZE P%u", patientNumber);
+  } else {
+    snprintf(status, statusLen, "PRIVACY PAUZE");
+  }
 }
 
 void drawRecording() {
-  gfx->fillScreen(C_OM_BG);
-  drawBrandHeader("REC");
+  gfx->fillScreen(C_BG);
+  char status[32];
+  char elapsed[16];
+  recordingHeader(status, sizeof(status));
+  formatElapsed(elapsed, sizeof(elapsed));
+  drawTopBar(status, elapsed);
 
-  Rect timerCard{14, 82, 252, 120};
-  roundedCard(timerCard, C_OM_CARD, C_OM_LINE);
-  centeredBold(96, modeTitle(selectedMode), C_OM_BLUE, 2);
+  bigZone(THREE_TOP, "PRIVACY", C_AMBER, C_NAVY, "tijdelijk niet opnemen");
+  bigZone(THREE_MIDDLE,
+          selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER",
+          C_BLUE, C_WHITE,
+          selectedMode == Mode::ROUND ? "nieuwe patient" : "markeer dit moment");
+  bigZone(THREE_BOTTOM, "STOP", C_RED, C_WHITE, "opname afronden");
 
-  Rect infoCard{14, 214, 252, 66};
-  roundedCard(infoCard, C_OM_SOFT, C_OM_LINE);
-  if (selectedMode == Mode::ROUND) {
-    char p[32];
-    snprintf(p, sizeof(p), "PATIENT %u", patientNumber);
-    centeredBold(236, p, C_OM_BLUE, 2);
-  } else {
-    char m[32];
-    snprintf(m, sizeof(m), "MARKERS %u", markerCount);
-    centeredBold(236, m, C_OM_BLUE, 2);
-  }
-
-  button(REC_PRIVACY, "PRIVACY", C_OM_CARD, C_OM_AMBER, C_OM_NAVY, 2);
-  button(REC_MARKER,
-         selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER",
-         C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
-  button(REC_STOP, "STOP", C_OM_RED, C_OM_RED, C_OM_WHITE, 2);
-
-  lastDisplayedSecond = 0xFFFFFFFFUL;
-  drawRecordingDynamic(true);
+  lastDisplayedSecond = activeElapsedMs() / 1000;
 }
 
 void drawPaused() {
-  gfx->fillScreen(C_OM_BG);
-  drawBrandHeader("PAUZE");
-
-  Rect card{14, 82, 252, 198};
-  roundedCard(card, C_OM_CARD, C_OM_LINE);
-  centeredBold(108, "PRIVACY PAUZE", C_OM_AMBER, 2);
-  centeredBold(148, "GEEN AUDIO", C_OM_RED, 3);
-  centered(194, "De microfoon staat hier", C_OM_MUTED, 1);
-  centered(212, "in de echte recorder fysiek stil.", C_OM_MUTED, 1);
-
+  gfx->fillScreen(C_BG);
+  char status[32];
   char elapsed[16];
+  pausedHeader(status, sizeof(status));
   formatElapsed(elapsed, sizeof(elapsed));
-  centeredBold(242, elapsed, C_OM_NAVY, 2);
+  drawTopBar(status, elapsed);
 
-  button(REC_PRIVACY, "HERVAT", C_OM_GREEN, C_OM_GREEN, C_OM_WHITE, 2);
-  button(REC_MARKER,
-         selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER",
-         C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
-  button(REC_STOP, "STOP", C_OM_RED, C_OM_RED, C_OM_WHITE, 2);
+  bigZone(THREE_TOP, "HERVAT", C_GREEN, C_WHITE, "microfoon weer aan");
+  bigZone(THREE_MIDDLE,
+          selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER",
+          C_BLUE, C_WHITE,
+          selectedMode == Mode::ROUND ? "nieuwe patient" : "markeer dit moment");
+  bigZone(THREE_BOTTOM, "STOP", C_RED, C_WHITE, "opname afronden");
 }
 
 void drawFinished() {
-  gfx->fillScreen(C_OM_BG);
-  drawBrandHeader(sdOk ? "SD" : "--");
+  gfx->fillScreen(C_BG);
+  drawTopBar("OPNAME OPGESLAGEN", "AUTO TERUG OVER 8 SEC");
+  bigZone(TWO_TOP, "VUL AAN", C_BLUE, C_WHITE, "doorgaan in dezelfde sessie");
+  bigZone(TWO_BOTTOM, "KLAAR", C_GREEN, C_WHITE, "terug naar hoofdmenu");
+  lastFinishedCountdown = 8;
+}
 
-  Rect card{14, 92, 252, 220};
-  roundedCard(card, C_OM_CARD, C_OM_LINE);
-  centeredBold(122, "OPGESLAGEN", C_OM_GREEN, 2);
-  centeredBold(160, "DEMO SESSIE KLAAR", C_OM_NAVY, 2);
+void drawMenu() {
+  gfx->fillScreen(C_BG);
+  drawTopBar("MENU");
+  bigZone(THREE_TOP, "STATUS", C_BLUE, C_WHITE, "accu / mic / opslag");
+  bigZone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "Wi-Fi alleen op verzoek");
+  bigZone(THREE_BOTTOM, "TERUG", C_NAVY, C_WHITE, "hoofdmenu");
+}
 
-  char info[48];
-  if (selectedMode == Mode::ROUND) {
-    snprintf(info, sizeof(info), "%u patienten / %u grenzen",
-             patientNumber, markerCount);
+void drawStatusInfo() {
+  gfx->fillRect(0, HEADER_H, SCREEN_W, STATUS_BACK.y - HEADER_H, C_BG);
+
+  char line[64];
+  if (batteryPercent >= 0) {
+    snprintf(line, sizeof(line), "ACCU  %d%%", batteryPercent);
+    centeredBold(84, line, batteryPercent <= 15 ? C_RED : C_NAVY, 3);
+    snprintf(line, sizeof(line), "%.2f V  (voorlopige schatting)", batteryMv / 1000.0f);
+    centeredBold(121, line, C_MUTED, 1);
   } else {
-    snprintf(info, sizeof(info), "%u markers", markerCount);
+    centeredBold(88, "ACCU --", C_MUTED, 3);
+    centeredBold(124, "nog geen LiPo gemeten", C_MUTED, 1);
   }
-  centeredBold(215, info, C_OM_BLUE, 1);
-  centered(248,
-           sdOk ? "events staan op microSD" : "geen SD-log geschreven",
-           sdOk ? C_OM_GREEN : C_OM_AMBER, 1);
 
-  button(DONE_BACK, "NIEUWE OPNAME", C_OM_BLUE, C_OM_BLUE, C_OM_WHITE, 2);
+  centeredBold(163, sdOk ? "MICROSD  OK" : "MICROSD  FOUT",
+               sdOk ? C_GREEN : C_RED, 2);
+
+  centeredBold(204, "MICROFOONS  0 / 2", C_AMBER, 2);
+  centeredBold(229, "wacht op IM73D122 integratie", C_MUTED, 1);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    snprintf(line, sizeof(line), "WIFI  %s", WiFi.SSID().c_str());
+    centeredBold(265, line, C_GREEN, 1);
+  } else {
+    centeredBold(265, "WIFI  UIT", C_NAVY, 2);
+  }
+
+  snprintf(line, sizeof(line), "LOKALE SESSIES  %u", countDemoSessions());
+  centeredBold(307, line, C_BLUE, 1);
+}
+
+void drawStatus() {
+  gfx->fillScreen(C_BG);
+  drawTopBar("STATUS");
+  drawStatusInfo();
+  bigZone(STATUS_BACK, "TERUG", C_NAVY, C_WHITE);
+}
+
+const char *syncPhaseTitle() {
+  switch (syncPhase) {
+    case SyncPhase::NO_CREDENTIALS: return "WIFI NIET INGESTELD";
+    case SyncPhase::CONNECTING_1:
+    case SyncPhase::CONNECTING_2: return "VERBINDEN...";
+    case SyncPhase::CONNECTED: return "NETWERK VERBONDEN";
+    case SyncPhase::FAILED: return "GEEN VERBINDING";
+    default: return "SYNC GEREED";
+  }
+}
+
+void drawSyncInfo() {
+  gfx->fillRect(0, HEADER_H, SCREEN_W, SYNC_RETRY.y - HEADER_H, C_BG);
+  centeredBold(92, syncPhaseTitle(),
+               syncPhase == SyncPhase::CONNECTED ? C_GREEN :
+               syncPhase == SyncPhase::FAILED ? C_RED : C_NAVY,
+               syncPhase == SyncPhase::CONNECTING_1 || syncPhase == SyncPhase::CONNECTING_2 ? 2 : 1);
+
+  if (syncPhase == SyncPhase::CONNECTING_1 || syncPhase == SyncPhase::CONNECTING_2) {
+    const char *ssid = syncPhase == SyncPhase::CONNECTING_1
+                           ? VISITESCRIBE_WIFI_SSID_1
+                           : VISITESCRIBE_WIFI_SSID_2;
+    centeredBold(132, ssid, C_BLUE, 2);
+    centeredBold(175, "Wi-Fi is normaal volledig uit", C_MUTED, 1);
+    centeredBold(194, "en wordt alleen voor SYNC aangezet", C_MUTED, 1);
+  } else if (syncPhase == SyncPhase::CONNECTED) {
+    centeredBold(132, WiFi.SSID().c_str(), C_BLUE, 2);
+    centeredBold(174, "NETWERKTEST OK", C_GREEN, 2);
+    centeredBold(205, "server-upload volgt met echte audio", C_MUTED, 1);
+  } else if (syncPhase == SyncPhase::NO_CREDENTIALS) {
+    centeredBold(132, "wifi_secrets.h ontbreekt", C_RED, 1);
+    centeredBold(172, "credentials blijven lokaal", C_MUTED, 1);
+    centeredBold(191, "en komen niet in GitHub", C_MUTED, 1);
+  } else if (syncPhase == SyncPhase::FAILED) {
+    centeredBold(139, "beide netwerken geprobeerd", C_MUTED, 1);
+    centeredBold(178, "druk OPNIEUW om nogmaals te testen", C_MUTED, 1);
+  }
+}
+
+void drawSync() {
+  gfx->fillScreen(C_BG);
+  drawTopBar("SYNC");
+  drawSyncInfo();
+  bigZone(SYNC_RETRY, "OPNIEUW", C_BLUE, C_WHITE);
+  bigZone(SYNC_BACK, "TERUG", C_NAVY, C_WHITE, "Wi-Fi weer uit");
+}
+
+void drawRecordingTimerOnly() {
+  uint32_t sec = activeElapsedMs() / 1000;
+  if (sec == lastDisplayedSecond) return;
+  lastDisplayedSecond = sec;
+
+  char elapsed[16];
+  formatElapsed(elapsed, sizeof(elapsed));
+  gfx->fillRect(70, 47, 140, 15, C_WHITE);
+  centeredBold(49, elapsed, C_MUTED, 1);
+}
+
+void drawFinishedCountdownOnly() {
+  if (state != AppState::FINISHED) return;
+  uint32_t elapsed = millis() - finishedAtMs;
+  uint32_t remain = elapsed >= FINISHED_AUTO_HOME_MS
+                        ? 0
+                        : (FINISHED_AUTO_HOME_MS - elapsed + 999) / 1000;
+  if (remain == lastFinishedCountdown) return;
+  lastFinishedCountdown = remain;
+
+  char line[32];
+  snprintf(line, sizeof(line), "AUTO TERUG OVER %lu SEC", (unsigned long)remain);
+  gfx->fillRect(42, 47, 196, 15, C_WHITE);
+  centeredBold(49, line, C_MUTED, 1);
 }
 
 void render(bool force = false) {
-  if (state == AppState::RECORDING && !screenDirty && !force) {
-    drawRecordingDynamic(false);
+  if (!force && !screenDirty) {
+    if (state == AppState::RECORDING || state == AppState::PAUSED) {
+      drawRecordingTimerOnly();
+    } else if (state == AppState::FINISHED) {
+      drawFinishedCountdownOnly();
+    }
     return;
   }
 
-  if (!force && !screenDirty) return;
   screenDirty = false;
-
   switch (state) {
     case AppState::HOME: drawHome(); break;
-    case AppState::CONFIRM: drawConfirm(); break;
+    case AppState::MODE_CONFIRM: drawModeConfirm(); break;
     case AppState::RECORDING: drawRecording(); break;
     case AppState::PAUSED: drawPaused(); break;
     case AppState::FINISHED: drawFinished(); break;
+    case AppState::MENU: drawMenu(); break;
+    case AppState::STATUS: drawStatus(); break;
+    case AppState::SYNC: drawSync(); break;
   }
 }
 
+// -----------------------------------------------------------------------------
+// Touch
+// -----------------------------------------------------------------------------
 bool readTouch(uint16_t &x, uint16_t &y) {
   Wire.beginTransmission(TOUCH_ADDR);
   Wire.write(0x02);
   if (Wire.endTransmission(false) != 0) return false;
-
   if (Wire.requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)5) != 5) return false;
+
   uint8_t b[5];
   for (int i = 0; i < 5; ++i) b[i] = Wire.read();
-
-  uint8_t touches = b[0] & 0x0F;
-  if (touches == 0) return false;
+  if ((b[0] & 0x0F) == 0) return false;
 
   x = ((uint16_t)(b[1] & 0x0F) << 8) | b[2];
   y = ((uint16_t)(b[3] & 0x0F) << 8) | b[4];
@@ -403,32 +652,81 @@ void initTouch() {
   Wire.endTransmission();
 }
 
-bool initSD() {
-  sdSPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
-  if (!SD.begin(SD_CS, sdSPI, 10000000)) return false;
-  if (SD.cardType() == CARD_NONE) return false;
-
-  if (!SD.exists("/visitescribe")) SD.mkdir("/visitescribe");
-  File boot = SD.open("/visitescribe/boot.log", FILE_APPEND);
-  if (boot) {
-    boot.printf("boot_ms=%lu board_rev=%d\n",
-                (unsigned long)millis(), VISITESCRIBE_BOARD_REV);
-    boot.close();
-  }
-  return true;
+// -----------------------------------------------------------------------------
+// Manual Wi-Fi / sync preparation
+// Wi-Fi is OFF at boot and whenever the user leaves the sync screen.
+// Credentials live only in gitignored include/wifi_secrets.h.
+// -----------------------------------------------------------------------------
+void wifiOff() {
+  WiFi.disconnect(true, true);
+  delay(20);
+  WiFi.mode(WIFI_OFF);
 }
 
-void logEvent(const char *eventName) {
-  if (!sdOk || currentLogPath[0] == '\0') return;
-  File f = SD.open(currentLogPath, FILE_APPEND);
-  if (!f) return;
-  f.printf("%lu,%s,%u,%u\n",
-           (unsigned long)activeElapsedMs(),
-           eventName,
-           patientNumber,
-           markerCount);
-  f.flush();
-  f.close();
+void startWifiAttempt(uint8_t index) {
+#if VISITESCRIBE_WIFI_CONFIGURED
+  syncNetwork = index;
+  WiFi.disconnect(true, true);
+  delay(20);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(false);
+  WiFi.persistent(false);
+
+  const char *ssid = index == 0 ? VISITESCRIBE_WIFI_SSID_1 : VISITESCRIBE_WIFI_SSID_2;
+  const char *password = index == 0 ? VISITESCRIBE_WIFI_PASSWORD_1 : VISITESCRIBE_WIFI_PASSWORD_2;
+  WiFi.begin(ssid, password);
+  syncPhase = index == 0 ? SyncPhase::CONNECTING_1 : SyncPhase::CONNECTING_2;
+  syncAttemptStartedMs = millis();
+#else
+  (void)index;
+  syncPhase = SyncPhase::NO_CREDENTIALS;
+#endif
+  screenDirty = true;
+}
+
+void beginManualSync() {
+  state = AppState::SYNC;
+#if VISITESCRIBE_WIFI_CONFIGURED
+  startWifiAttempt(0);
+#else
+  syncPhase = SyncPhase::NO_CREDENTIALS;
+  screenDirty = true;
+#endif
+}
+
+void serviceSync() {
+  if (state != AppState::SYNC) return;
+  if (syncPhase != SyncPhase::CONNECTING_1 &&
+      syncPhase != SyncPhase::CONNECTING_2) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    syncPhase = SyncPhase::CONNECTED;
+    screenDirty = true;
+    Serial.printf("Wi-Fi connected: %s, IP=%s\n",
+                  WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    return;
+  }
+
+  if (millis() - syncAttemptStartedMs >= WIFI_ATTEMPT_MS) {
+    if (syncPhase == SyncPhase::CONNECTING_1) {
+      startWifiAttempt(1);
+    } else {
+      wifiOff();
+      syncPhase = SyncPhase::FAILED;
+      screenDirty = true;
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Session actions. UI feedback happens before potentially slower SD writes;
+// event timestamps are captured first, so responsiveness does not reduce
+// timeline precision.
+// -----------------------------------------------------------------------------
+void selectMode(Mode mode) {
+  selectedMode = mode;
+  state = AppState::MODE_CONFIRM;
+  screenDirty = true;
 }
 
 void startDemo() {
@@ -442,10 +740,9 @@ void startDemo() {
            "/visitescribe/demo_%08lx.csv",
            (unsigned long)sessionStartedMs);
 
-  // Immediate visual response before SD I/O.
   state = AppState::RECORDING;
   screenDirty = true;
-  render(true);
+  render(true);  // instant visual feedback before SD I/O
 
   if (sdOk) {
     File f = SD.open(currentLogPath, FILE_WRITE);
@@ -454,47 +751,67 @@ void startDemo() {
       f.close();
     }
   }
-
-  logEvent("session_started");
+  logEventAt("session_started", 0);
 }
 
 void togglePrivacy() {
+  uint32_t eventOffset = activeElapsedMs();
   if (state == AppState::RECORDING) {
     pauseStartedMs = millis();
-    logEvent("privacy_pause_started");
     state = AppState::PAUSED;
+    screenDirty = true;
+    render(true);
+    logEventAt("privacy_pause_started", eventOffset);
   } else if (state == AppState::PAUSED) {
     uint32_t pausedFor = millis() - pauseStartedMs;
     totalPausedMs += pausedFor;
+    pauseStartedMs = 0;
     state = AppState::RECORDING;
-    logEvent("privacy_pause_ended");
+    screenDirty = true;
+    render(true);
+    logEventAt("privacy_pause_ended", eventOffset);
   }
-  screenDirty = true;
 }
 
 void addMarker() {
+  uint32_t eventOffset = activeElapsedMs();
   markerCount++;
-  if (selectedMode == Mode::ROUND) {
-    patientNumber++;
-    logEvent("patient_boundary");
-  } else {
-    logEvent("marker");
-  }
+  if (selectedMode == Mode::ROUND) patientNumber++;
+
   screenDirty = true;
+  render(true);
+  logEventAt(selectedMode == Mode::ROUND ? "patient_boundary" : "marker",
+             eventOffset);
 }
 
 void stopDemo() {
   if (state != AppState::RECORDING && state != AppState::PAUSED) return;
-  logEvent("session_stopped");
-  state = AppState::FINISHED;
+  uint32_t eventOffset = activeElapsedMs();
+  bool wasPaused = state == AppState::PAUSED;
+  uint32_t pausedFor = wasPaused ? millis() - pauseStartedMs : 0;
+
   finishedAtMs = millis();
+  state = AppState::FINISHED;
   screenDirty = true;
+  render(true);
+  logEventAt("session_stopped", eventOffset);
+
+  if (wasPaused) {
+    totalPausedMs += pausedFor;
+    pauseStartedMs = 0;
+  }
 }
 
-void selectMode(Mode mode) {
-  selectedMode = mode;
-  state = AppState::CONFIRM;
+void resumeFinishedSession() {
+  if (state != AppState::FINISHED) return;
+  uint32_t now = millis();
+  totalPausedMs += now - finishedAtMs;
+  finishedAtMs = 0;
+  state = AppState::RECORDING;
+  uint32_t eventOffset = activeElapsedMs();
   screenDirty = true;
+  render(true);
+  logEventAt("session_resumed", eventOffset);
 }
 
 void handleTouchPress(uint16_t x, uint16_t y) {
@@ -505,28 +822,60 @@ void handleTouchPress(uint16_t x, uint16_t y) {
       if (HOME_VISIT.contains(x, y)) selectMode(Mode::VISIT);
       else if (HOME_ROUND.contains(x, y)) selectMode(Mode::ROUND);
       else if (HOME_MEETING.contains(x, y)) selectMode(Mode::MEETING);
-      break;
-
-    case AppState::CONFIRM:
-      if (CONF_START.contains(x, y)) startDemo();
-      else if (CONF_BACK.contains(x, y)) {
-        state = AppState::HOME;
+      else if (HOME_MENU.contains(x, y)) {
+        state = AppState::MENU;
         screenDirty = true;
       }
       break;
 
+    case AppState::MODE_CONFIRM:
+      if (TWO_TOP.contains(x, y)) startDemo();
+      else if (TWO_BOTTOM.contains(x, y)) goHome();
+      break;
+
     case AppState::RECORDING:
+      if (THREE_TOP.contains(x, y)) togglePrivacy();
+      else if (THREE_MIDDLE.contains(x, y)) addMarker();
+      else if (THREE_BOTTOM.contains(x, y)) stopDemo();
+      break;
+
     case AppState::PAUSED:
-      if (REC_PRIVACY.contains(x, y)) togglePrivacy();
-      else if (REC_MARKER.contains(x, y)) addMarker();
-      else if (REC_STOP.contains(x, y)) stopDemo();
+      if (THREE_TOP.contains(x, y)) togglePrivacy();
+      else if (THREE_MIDDLE.contains(x, y)) addMarker();
+      else if (THREE_BOTTOM.contains(x, y)) stopDemo();
       break;
 
     case AppState::FINISHED:
-      if (DONE_BACK.contains(x, y)) {
-        state = AppState::HOME;
-        sessionStartedMs = 0;
-        currentLogPath[0] = '\0';
+      if (TWO_TOP.contains(x, y)) resumeFinishedSession();
+      else if (TWO_BOTTOM.contains(x, y)) goHome();
+      break;
+
+    case AppState::MENU:
+      if (THREE_TOP.contains(x, y)) {
+        state = AppState::STATUS;
+        updateBattery(true);
+        screenDirty = true;
+      } else if (THREE_MIDDLE.contains(x, y)) {
+        beginManualSync();
+      } else if (THREE_BOTTOM.contains(x, y)) {
+        goHome();
+      }
+      break;
+
+    case AppState::STATUS:
+      if (STATUS_BACK.contains(x, y)) {
+        state = AppState::MENU;
+        screenDirty = true;
+      }
+      break;
+
+    case AppState::SYNC:
+      if (SYNC_RETRY.contains(x, y)) {
+        startWifiAttempt(0);
+      } else if (SYNC_BACK.contains(x, y)) {
+        wifiOff();
+        syncPhase = SyncPhase::NOT_STARTED;
+        state = AppState::MENU;
         screenDirty = true;
       }
       break;
@@ -536,7 +885,6 @@ void handleTouchPress(uint16_t x, uint16_t y) {
 void pollBootButton() {
   bool down = digitalRead(VISITESCRIBE_BOOT_GPIO) == LOW;
   uint32_t now = millis();
-
   if (down && !bootWasDown) bootPressedAtMs = now;
 
   if (down && bootWasDown && bootPressedAtMs != 0 &&
@@ -544,8 +892,8 @@ void pollBootButton() {
     if (state == AppState::RECORDING || state == AppState::PAUSED) {
       stopDemo();
     } else {
-      state = AppState::HOME;
-      screenDirty = true;
+      if (state == AppState::SYNC) wifiOff();
+      goHome();
     }
     bootPressedAtMs = 0;
   }
@@ -558,20 +906,31 @@ void setup() {
   Serial.begin(115200);
   delay(400);
   Serial.println();
-  Serial.println("VisiteScribe MINI - OurMind branded Waveshare demo v0.4");
+  Serial.println("VisiteScribe MINI - large-touch OurMind UI v0.5");
   Serial.printf("Board revision target: V%d\n", VISITESCRIBE_BOARD_REV);
 
   pinMode(VISITESCRIBE_BOOT_GPIO, INPUT_PULLUP);
+  pinMode(BAT_ADC_GPIO, INPUT);
 
-  if (!gfx->begin()) {
-    Serial.println("ERROR: display init failed");
-  }
-  gfx->fillScreen(C_OM_BG);
+  if (!gfx->begin()) Serial.println("ERROR: display init failed");
+  gfx->fillScreen(C_BG);
 
   initTouch();
   sdOk = initSD();
+  updateBattery(true);
+
+  // Deliberate privacy/power policy: never associate with Wi-Fi at boot.
+  WiFi.mode(WIFI_OFF);
+
   Serial.printf("microSD: %s\n", sdOk ? "OK" : "NOT FOUND");
-  Serial.println("No microphone is present on this board; recording is simulated.");
+  Serial.printf("battery: %s (%u mV)\n",
+                batteryPercent < 0 ? "not detected" : "detected", batteryMv);
+#if VISITESCRIBE_WIFI_CONFIGURED
+  Serial.println("Wi-Fi credentials: local config present; radio remains OFF until SYNC.");
+#else
+  Serial.println("Wi-Fi credentials: not configured; copy wifi_secrets.example.h locally.");
+#endif
+  Serial.println("Microphones: main demo still simulated; IM73D122 lab firmware is separate.");
 
   render(true);
 }
@@ -583,6 +942,19 @@ void loop() {
   touchWasDown = touchDown;
 
   pollBootButton();
+  serviceSync();
+
+  bool batteryChanged = updateBattery(false);
+  if (batteryChanged && batteryPercent != lastBatteryUiPercent) {
+    if (state == AppState::STATUS) screenDirty = true;
+    else drawBatteryBadge();
+  }
+
+  if (state == AppState::FINISHED &&
+      millis() - finishedAtMs >= FINISHED_AUTO_HOME_MS) {
+    goHome();
+  }
+
   render();
   delay(12);
 }
