@@ -73,8 +73,9 @@ static constexpr uint16_t C_DARKGREY = 0x39E7;
 
 Arduino_DataBus *displayBus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
-Arduino_GFX *gfx = new Arduino_CO5300(
+Arduino_CO5300 *panel = new Arduino_CO5300(
     displayBus, LCD_RST, 0, SCREEN_W, SCREEN_H, 20, 0, 180, 24);
+Arduino_GFX *gfx = panel;
 
 SPIClass sdSPI(HSPI);
 
@@ -167,6 +168,30 @@ int lastBatteryUiPercent = -999;
 uint32_t syncAttemptStartedMs = 0;
 uint8_t syncNetwork = 0;
 static constexpr uint32_t WIFI_ATTEMPT_MS = 6500;
+
+// AMOLED power policy. The panel stays fully usable while dimmed; the first
+// touch restores normal brightness and performs the requested action in that
+// same tap. This avoids a frustrating 'tap once to wake, tap again to act'.
+static constexpr uint8_t DISPLAY_BRIGHTNESS_ACTIVE = 0xD0;
+static constexpr uint8_t DISPLAY_BRIGHTNESS_DIM = 0x28;
+static constexpr uint32_t DISPLAY_IDLE_DIM_MS = 12000;
+uint32_t lastUserActivityMs = 0;
+bool displayDimmed = false;
+
+void noteUserActivity() {
+  lastUserActivityMs = millis();
+  if (displayDimmed) {
+    panel->setBrightness(DISPLAY_BRIGHTNESS_ACTIVE);
+    displayDimmed = false;
+  }
+}
+
+void serviceDisplayPower() {
+  if (displayDimmed) return;
+  if (millis() - lastUserActivityMs < DISPLAY_IDLE_DIM_MS) return;
+  panel->setBrightness(DISPLAY_BRIGHTNESS_DIM);
+  displayDimmed = true;
+}
 
 // -----------------------------------------------------------------------------
 // Text and drawing helpers
@@ -404,9 +429,11 @@ void goHome() {
 
 // -----------------------------------------------------------------------------
 // Screens
+// The status bar + full-height button zones cover every pixel, so these screen
+// changes deliberately avoid a redundant fillScreen() pass. That was a major
+// source of perceived lag on the first large-touch build.
 // -----------------------------------------------------------------------------
 void drawHome() {
-  gfx->fillScreen(C_BG);
   drawTopBar("HOOFDMENU");
   bigZone(HOME_VISIT, "VISITE", C_BLUE, C_WHITE, "1 patient");
   bigZone(HOME_ROUND, "PATIENTRONDE", C_VIOLET, C_WHITE, "meerdere patienten");
@@ -415,7 +442,6 @@ void drawHome() {
 }
 
 void drawModeConfirm() {
-  gfx->fillScreen(C_BG);
   drawTopBar(modeTitle(selectedMode));
   bigZone(TWO_TOP, "START", C_GREEN, C_WHITE);
   bigZone(TWO_BOTTOM, "TERUG", C_NAVY, C_WHITE);
@@ -440,7 +466,6 @@ void pausedHeader(char *status, size_t statusLen) {
 }
 
 void drawRecording() {
-  gfx->fillScreen(C_BG);
   char status[32];
   char elapsed[16];
   recordingHeader(status, sizeof(status));
@@ -458,7 +483,6 @@ void drawRecording() {
 }
 
 void drawPaused() {
-  gfx->fillScreen(C_BG);
   char status[32];
   char elapsed[16];
   pausedHeader(status, sizeof(status));
@@ -474,7 +498,6 @@ void drawPaused() {
 }
 
 void drawFinished() {
-  gfx->fillScreen(C_BG);
   drawTopBar("OPNAME OPGESLAGEN", "AUTO TERUG OVER 8 SEC");
   bigZone(TWO_TOP, "VUL AAN", C_BLUE, C_WHITE, "doorgaan in dezelfde sessie");
   bigZone(TWO_BOTTOM, "KLAAR", C_GREEN, C_WHITE, "terug naar hoofdmenu");
@@ -482,7 +505,6 @@ void drawFinished() {
 }
 
 void drawMenu() {
-  gfx->fillScreen(C_BG);
   drawTopBar("MENU");
   bigZone(THREE_TOP, "STATUS", C_BLUE, C_WHITE, "accu / mic / opslag");
   bigZone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "Wi-Fi alleen op verzoek");
@@ -521,7 +543,6 @@ void drawStatusInfo() {
 }
 
 void drawStatus() {
-  gfx->fillScreen(C_BG);
   drawTopBar("STATUS");
   drawStatusInfo();
   bigZone(STATUS_BACK, "TERUG", C_NAVY, C_WHITE);
@@ -567,7 +588,6 @@ void drawSyncInfo() {
 }
 
 void drawSync() {
-  gfx->fillScreen(C_BG);
   drawTopBar("SYNC");
   drawSyncInfo();
   bigZone(SYNC_RETRY, "OPNIEUW", C_BLUE, C_WHITE);
@@ -645,7 +665,7 @@ bool readTouch(uint16_t &x, uint16_t &y) {
 
 void initTouch() {
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
-  Wire.setClock(300000);
+  Wire.setClock(400000);
   Wire.beginTransmission(TOUCH_ADDR);
   Wire.write(0x00);
   Wire.write(0x00);
@@ -815,7 +835,9 @@ void resumeFinishedSession() {
 }
 
 void handleTouchPress(uint16_t x, uint16_t y) {
+#ifdef VISITESCRIBE_TOUCH_DEBUG
   Serial.printf("touch x=%u y=%u state=%u\n", x, y, (unsigned)state);
+#endif
 
   switch (state) {
     case AppState::HOME:
@@ -885,6 +907,7 @@ void handleTouchPress(uint16_t x, uint16_t y) {
 void pollBootButton() {
   bool down = digitalRead(VISITESCRIBE_BOOT_GPIO) == LOW;
   uint32_t now = millis();
+  if (down) noteUserActivity();
   if (down && !bootWasDown) bootPressedAtMs = now;
 
   if (down && bootWasDown && bootPressedAtMs != 0 &&
@@ -906,13 +929,14 @@ void setup() {
   Serial.begin(115200);
   delay(400);
   Serial.println();
-  Serial.println("VisiteScribe MINI - large-touch OurMind UI v0.5");
+  Serial.println("VisiteScribe MINI - large-touch OurMind UI v0.6");
   Serial.printf("Board revision target: V%d\n", VISITESCRIBE_BOARD_REV);
 
   pinMode(VISITESCRIBE_BOOT_GPIO, INPUT_PULLUP);
   pinMode(BAT_ADC_GPIO, INPUT);
 
   if (!gfx->begin()) Serial.println("ERROR: display init failed");
+  panel->setBrightness(DISPLAY_BRIGHTNESS_ACTIVE);
   gfx->fillScreen(C_BG);
 
   initTouch();
@@ -922,6 +946,8 @@ void setup() {
   // Deliberate privacy/power policy: never associate with Wi-Fi at boot.
   WiFi.mode(WIFI_OFF);
 
+  lastUserActivityMs = millis();
+
   Serial.printf("microSD: %s\n", sdOk ? "OK" : "NOT FOUND");
   Serial.printf("battery: %s (%u mV)\n",
                 batteryPercent < 0 ? "not detected" : "detected", batteryMv);
@@ -930,6 +956,7 @@ void setup() {
 #else
   Serial.println("Wi-Fi credentials: not configured; copy wifi_secrets.example.h locally.");
 #endif
+  Serial.println("Display: auto-dims after 12 seconds; first touch wakes and acts immediately.");
   Serial.println("Microphones: main demo still simulated; IM73D122 lab firmware is separate.");
 
   render(true);
@@ -938,6 +965,7 @@ void setup() {
 void loop() {
   uint16_t x = 0, y = 0;
   bool touchDown = readTouch(x, y);
+  if (touchDown) noteUserActivity();
   if (touchDown && !touchWasDown) handleTouchPress(x, y);
   touchWasDown = touchDown;
 
@@ -956,5 +984,6 @@ void loop() {
   }
 
   render();
-  delay(12);
+  serviceDisplayPower();
+  delay(8);
 }
