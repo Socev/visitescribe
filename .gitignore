@@ -24,6 +24,7 @@ device.key
 server-wrap-public.pem
 .env
 .env.*
+**/include/wifi_secrets.h
 
 # OS/editor
 .DS_Store
