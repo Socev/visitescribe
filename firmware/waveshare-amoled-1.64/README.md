@@ -1,8 +1,82 @@
 # VisiteScribe MINI - Waveshare ESP32-S3-Touch-AMOLED-1.64
 
-First hardware/UI prototype for the Waveshare **ESP32-S3-Touch-AMOLED-1.64**.
+OurMind-branded hardware/UI prototype for the Waveshare **ESP32-S3-Touch-AMOLED-1.64**.
 
-This is deliberately a **UI + touch + microSD bring-up build**. The board itself has no onboard microphone, so v0.1 does not record audio yet. It simulates a recording while exercising the intended VisiteScribe workflow and writes demo events to microSD.
+The main build is still a **UI + touch + microSD workflow prototype**. Real microphone development lives in the separate `waveshare-amoled-1.64-im73d122-lab` firmware until the IM73D122 hardware has been validated.
+
+## UI philosophy
+
+The v0.5 interface is intentionally designed as a recorder rather than a tiny smartphone:
+
+- the top 64 px are status only;
+- every choice uses the rest of the screen in huge full-width touch zones;
+- no small record/stop/privacy targets;
+- recording uses three ~one-third-screen actions: PRIVACY / VOLGENDE or MARKER / STOP;
+- privacy pause uses HERVAT / VOLGENDE or MARKER / STOP;
+- after STOP the user gets VUL AAN or KLAAR;
+- if untouched after STOP, the device returns to the main menu after 8 seconds;
+- the main menu includes MENU -> STATUS and SYNC.
+
+Colours are functional as well as branded: OurMind blue for normal actions, green for start/resume/complete, amber for privacy, red for stop, and dark navy for navigation/back.
+
+## Main menu
+
+The main menu has four large zones:
+
+1. VISITE
+2. PATIENTRONDE
+3. VERGADERING
+4. MENU
+
+`MENU` opens:
+
+- `STATUS` - battery, microSD, microphone integration state, Wi-Fi state and local session count;
+- `SYNC` - manually turns Wi-Fi on and tries the configured networks;
+- `TERUG`.
+
+Wi-Fi is deliberately **OFF at boot** and remains off during normal recording. It is only enabled when the user explicitly enters SYNC, and is turned off again when leaving that screen. This reduces power consumption and avoids background network activity during recording.
+
+## Battery status
+
+The V2 board schematic routes `VBAT` through an onboard **200k/100k divider** to `BAT_ADC` on GPIO4. The firmware averages ADC readings, multiplies by three and shows an approximate LiPo percentage in the top-right corner.
+
+The initial percentage curve is only an estimate. Once the real 1500/1800 mAh batteries are connected, calibrate it against measured run time and battery voltage.
+
+If no plausible battery voltage is detected, the header shows `--%`.
+
+## Local Wi-Fi configuration
+
+**Never put Wi-Fi passwords in this public repository.**
+
+The firmware looks for:
+
+```text
+include/wifi_secrets.h
+```
+
+That file is ignored by git. A safe template is committed as:
+
+```text
+include/wifi_secrets.example.h
+```
+
+Copy it locally:
+
+```powershell
+Copy-Item include\wifi_secrets.example.h include\wifi_secrets.h
+```
+
+Then edit `include/wifi_secrets.h` and fill in the two preferred SSIDs/passwords:
+
+```cpp
+#pragma once
+#define VISITESCRIBE_WIFI_SSID_1 "YOUR_WIFI_SSID_1"
+#define VISITESCRIBE_WIFI_PASSWORD_1 "YOUR_WIFI_PASSWORD"
+#define VISITESCRIBE_WIFI_SSID_2 "YOUR_WIFI_SSID_2"
+#define VISITESCRIBE_WIFI_PASSWORD_2 "YOUR_WIFI_PASSWORD"
+```
+
+The current SYNC screen performs the manual Wi-Fi connection/fallback test. Actual API upload is deliberately not faked in this UI-only build; that will be connected when the real audio/session format is merged from the microphone firmware.
 
 ## What works in this demo
 
@@ -10,60 +84,51 @@ This is deliberately a **UI + touch + microSD bring-up build**. The board itself
 - FT3168 touch
 - microSD detection and event logging
 - modes: VISITE / PATIENTRONDE / VERGADERING
+- very large touch targets throughout
 - simulated recording timer
 - privacy pause/resume
 - marker / next-patient action
-- stop action
+- stop + resume-same-session (`VUL AAN`)
+- automatic return to main menu after completion
+- battery voltage/percentage estimate
+- STATUS screen
+- on-request Wi-Fi with two-network fallback
 - BOOT button long-press as physical emergency stop
-- per-demo CSV event log under `/visitescribe/` on the card
+- per-demo CSV event log under `/visitescribe/`
 
 ## Board revision
 
-The project defaults to **Waveshare V2**. Waveshare has both V1 and V2 hardware. V2 uses LCD CS GPIO46; older V1 examples use GPIO9.
+The project defaults to **Waveshare V2**. V2 uses LCD CS GPIO46; older V1 examples use GPIO9.
 
-PlatformIO contains two environments:
+PlatformIO environments:
 
 - `waveshare-v2` - default
-- `waveshare-v1` - fallback if you have older hardware
-
-If the firmware uploads but the screen remains completely black, verify the revision printed on the PCB and try the other environment before changing anything else.
+- `waveshare-v1` - fallback for older hardware
 
 ## Requirements
 
 - VS Code
-- PlatformIO IDE extension
+- PioArduino / PlatformIO environment
 - USB-C data cable
 - microSD/TF card, FAT32 recommended
 
-All Arduino dependencies are pulled automatically by PlatformIO. The project pins Arduino_GFX to v1.6.7.
+All Arduino dependencies are pulled automatically by PlatformIO. Arduino_GFX is pinned in `platformio.ini`.
 
 ## Flash
 
-1. Clone `https://github.com/Socev/visitescribe.git` or update an existing clone.
-2. In VS Code choose **File -> Open Folder** and open exactly:
-   `firmware/waveshare-amoled-1.64`
-3. Wait until PlatformIO has installed the ESP32 toolchain and Arduino_GFX.
-4. Insert the microSD card in the board.
-5. Connect the board via USB-C.
-6. Use the PlatformIO **Upload** action. The default environment is `waveshare-v2`.
-7. After upload the board should reboot and show the VisiteScribe MINI home screen.
-
-If upload cannot connect, force download mode: hold **BOOT**, press and release **RESET**, then release **BOOT**, and upload again.
-
-## Serial monitor
-
-PlatformIO serial monitor speed: `115200`.
-
-Expected startup lines include:
+Open exactly this directory in VS Code:
 
 ```text
-VisiteScribe MINI - Waveshare AMOLED UI demo v0.1
-Board revision target: V2
-microSD: OK
-No microphone is present on this board; recording is simulated.
+firmware/waveshare-amoled-1.64
 ```
 
-Touch coordinates are also printed for debugging.
+Then:
+
+```powershell
+pio run -e waveshare-v2 -t upload
+```
+
+If upload cannot connect, force download mode: hold **BOOT**, press and release **RESET**, release **BOOT**, then retry.
 
 ## microSD output
 
@@ -88,10 +153,11 @@ elapsed_ms,event,patient,markers
 12311,privacy_pause_started,2,1
 15724,privacy_pause_ended,2,1
 22449,session_stopped,2,1
+22449,session_resumed,2,1
 ```
 
 No patient identifiers are written.
 
-## Next step
+## Next integration step
 
-Once the display/touch/SD build is proven on the physical unit, add an external digital MEMS microphone over I2S/PDM. Then replace the simulated recorder with real PCM chunk capture, encryption and the same VisiteScribe API contract used by the Raspberry Pi implementation.
+After the IM73D122 dual-PDM lab firmware has been validated on real microphones, merge its audio task into this large-touch recorder UI. At that point STATUS can report live `2/2` microphone health and SYNC can upload encrypted audio/session data using the existing VisiteScribe API contract.
