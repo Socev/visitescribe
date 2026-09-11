@@ -36,7 +36,9 @@ static constexpr int SD_MOSI = 39;
 static constexpr int SD_SCLK = 41;
 static constexpr int SD_CS = 38;
 
-static constexpr int BOOT_PIN = 0;
+// GPIO0 is the physical BOOT button. Do not call this BOOT_PIN: Arduino-ESP32
+// 3.x already defines BOOT_PIN in esp32-hal.h.
+static constexpr int VISITESCRIBE_BOOT_GPIO = 0;
 
 static constexpr uint16_t C_BG      = 0x0000;
 static constexpr uint16_t C_PANEL   = 0x1082;
@@ -455,7 +457,7 @@ void handleTouchPress(uint16_t x, uint16_t y) {
 }
 
 void pollBootButton() {
-  bool down = digitalRead(BOOT_PIN) == LOW;
+  bool down = digitalRead(VISITESCRIBE_BOOT_GPIO) == LOW;
   uint32_t now = millis();
 
   if (down && !bootWasDown) bootPressedAtMs = now;
@@ -481,7 +483,7 @@ void setup() {
   Serial.println("VisiteScribe MINI - Waveshare AMOLED UI demo v0.1");
   Serial.printf("Board revision target: V%d\n", VISITESCRIBE_BOARD_REV);
 
-  pinMode(BOOT_PIN, INPUT_PULLUP);
+  pinMode(VISITESCRIBE_BOOT_GPIO, INPUT_PULLUP);
 
   if (!gfx->begin()) {
     Serial.println("ERROR: display init failed");
