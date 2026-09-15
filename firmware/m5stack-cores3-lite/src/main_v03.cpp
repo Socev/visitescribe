@@ -1,14 +1,13 @@
 // VisiteScribe CoreS3-Lite v0.3
 //
-// v0.2 already proved that the FT6336U itself is alive: a touch wakes/dedims
-// the display. The remaining UI problem was that v0.2 fed the FT6336 raw
-// coordinates straight into a landscape (rotation=1) UI. This wrapper keeps
-// the complete v0.2 recorder implementation, but replaces the main loop so
-// raw touch points are converted through M5GFX before hit-testing.
+// v0.2 proved the FT6336U itself is alive: a touch wakes/dedims the display.
+// This wrapper keeps the complete v0.2 recorder implementation, but uses the
+// direct CoreS3-Lite touch and AXP2101 power-key paths for input.
 //
-// The power key is also polled directly from the AXP2101 without depending on
-// M5Unified board/PMIC classification. This matters on CoreS3-Lite builds that
-// use the generic esp32-s3-devkitc-1 PlatformIO target.
+// IMPORTANT: UI navigation must never be gated by microSD availability. The
+// previous build logged valid TOUCH/PWR events but only dispatched them when
+// sdOk was true, making the whole UI appear dead if SD initialisation failed.
+// Recording itself still remains safely gated inside startNewSession().
 
 #define setup setup_v02
 #define loop loop_v02
@@ -22,13 +21,12 @@ static bool readTouchV03(int& x, int& y, int& rawX, int& rawY) {
   rawX = rawY = -1;
   if (!touchOk) return false;
 
-  // Use the already-working direct FT6336 read from v0.2. It deliberately
-  // bypasses synthesized M5Unified touch events.
+  // The direct FT6336 read is already proven on the Lite.
   if (!readDirectTouch(rawX, rawY)) return false;
 
-  // Critical v0.3 fix: FT6336 reports native panel coordinates. The UI is
-  // drawn after M5.Display.setRotation(1), so convert the raw point with the
-  // exact same M5GFX panel transform before hit-testing.
+  // On the current CoreS3-Lite/M5GFX combination these values are already in
+  // the 320x240 landscape coordinate system; convertRawXY is harmless and
+  // keeps this correct if the panel driver starts returning native coordinates.
   lgfx::touch_point_t p;
   p.x = rawX;
   p.y = rawY;
@@ -40,8 +38,8 @@ static bool readTouchV03(int& x, int& y, int& rawX, int& rawY) {
 }
 
 static void serviceInputsV03() {
-  // PWR: CoreS3-Lite's left key is wired to AXP2101 PWRON. Poll the PMIC
-  // directly. getPekPress() returns 2 for a short click and clears the status.
+  // PWR: poll the onboard AXP2101 directly. getPekPress() returns 2 for a
+  // short click and clears that status bit.
   uint8_t pek = 0;
   if (axp2101DirectOk) {
     pek = M5.Power.Axp2101.getPekPress();
@@ -51,27 +49,39 @@ static void serviceInputsV03() {
   bool touchDown = readTouchV03(tx, ty, rawX, rawY);
 
   if ((pek & 0x02) != 0) {
-    Serial.printf("PWR short press state=%u\n", (unsigned)pek);
-    if (!wakeOnlyIfOff()) {
+    AppState before = state;
+    bool wakeOnly = wakeOnlyIfOff();
+    if (!wakeOnly) {
       noteActivity();
-      if (sdOk) handlePowerButton();
+      // Never gate UI dispatch on sdOk. startNewSession() itself refuses to
+      // record without storage; navigation and diagnostics must still work.
+      handlePowerButton();
     }
+    Serial.printf("PWR short press state=%u sd=%d wakeOnly=%d app=%u->%u\n",
+                  (unsigned)pek, sdOk ? 1 : 0, wakeOnly ? 1 : 0,
+                  (unsigned)before, (unsigned)state);
   }
 
   if (touchDown && !touchWasDown) {
-    Serial.printf("TOUCH raw=%d,%d converted=%d,%d rot=%u size=%dx%d\n",
+    AppState before = state;
+    bool wakeOnly = wakeOnlyIfOff();
+    if (!wakeOnly) {
+      noteActivity();
+      // Same fix as PWR: touch navigation remains active even if the SD card
+      // is absent or failed to mount.
+      handleTouch(tx, ty);
+    }
+    Serial.printf("TOUCH raw=%d,%d converted=%d,%d rot=%u size=%dx%d sd=%d wakeOnly=%d app=%u->%u\n",
                   rawX, rawY, tx, ty,
                   (unsigned)M5.Display.getRotation(),
-                  M5.Display.width(), M5.Display.height());
-    if (!wakeOnlyIfOff()) {
-      noteActivity();
-      if (sdOk) handleTouch(tx, ty);
-    }
+                  M5.Display.width(), M5.Display.height(),
+                  sdOk ? 1 : 0, wakeOnly ? 1 : 0,
+                  (unsigned)before, (unsigned)state);
   }
   touchWasDown = touchDown;
 
   // Keep M5Unified housekeeping alive for battery/audio internals. v0.2 set
-  // cfg.pmic_button=false, so M5.update() will not consume the PWR event.
+  // cfg.pmic_button=false, so M5.update() does not consume the PWR event.
   M5.update();
 }
 
@@ -81,11 +91,12 @@ void setup() {
   // Do not gate PWR polling on M5.Power.getType(). The Lite is known hardware:
   // initialise the onboard AXP2101 directly on the internal I2C bus.
   axp2101DirectOk = M5.Power.Axp2101.begin();
-  Serial.printf("VisiteScribe CoreS3-Lite v0.3; board=%d pmic=%d axp2101_direct=%s touch=%s display=%dx%d rot=%u\n",
+  Serial.printf("VisiteScribe CoreS3-Lite v0.3b; board=%d pmic=%d axp2101_direct=%s touch=%s sd=%s display=%dx%d rot=%u\n",
                 (int)M5.getBoard(),
                 (int)M5.Power.getType(),
                 axp2101DirectOk ? "OK" : "FAIL",
                 touchOk ? "OK" : "FAIL",
+                sdOk ? "OK" : "FAIL",
                 M5.Display.width(), M5.Display.height(),
                 (unsigned)M5.Display.getRotation());
 }
