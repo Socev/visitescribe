@@ -7,11 +7,11 @@
 // - verifies that the mounted card is writable before declaring SD OK
 // - emits concise serial diagnostics when mounting fails
 
-#define setup setup_v03
-#define loop loop_v03
+#define VISITESCRIBE_V03_SETUP_NAME setup_v03
+#define VISITESCRIBE_V03_LOOP_NAME loop_v03
 #include "main_v03.cpp"
-#undef setup
-#undef loop
+#undef VISITESCRIBE_V03_SETUP_NAME
+#undef VISITESCRIBE_V03_LOOP_NAME
 
 static uint32_t sdMountedHz = 0;
 
