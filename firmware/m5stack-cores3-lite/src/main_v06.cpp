@@ -41,16 +41,12 @@
 #define VISITESCRIBE_SERVER_BASE_URL "https://scribe.primumnonnocere.olares.com"
 #endif
 #ifndef VISITESCRIBE_DEVICE_ID
-// Existing installations generally already have this device registered.
-// A dedicated CoreS3 ID can be supplied locally in server_secrets.h later.
 #define VISITESCRIBE_DEVICE_ID "visitescribe-001"
 #endif
 #ifndef VISITESCRIBE_DEVICE_TOKEN
 #define VISITESCRIBE_DEVICE_TOKEN ""
 #endif
 
-// Default trust anchor for the production endpoint. server_secrets.h may
-// override VISITESCRIBE_SERVER_CA_PEM when the deployment uses another CA.
 static const char VS_DEFAULT_SERVER_CA[] PROGMEM = R"VSCA(-----BEGIN CERTIFICATE-----
 MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
 TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
@@ -113,17 +109,8 @@ struct VsChunkMeta {
 };
 
 enum class VsServerStage : uint8_t {
-  IDLE,
-  FETCH_KEY,
-  PREPARE,
-  CREATE_SESSION,
-  UPLOAD_CHUNKS,
-  EVENTS,
-  COMPLETE,
-  CONFIRM,
-  DONE,
-  NOTHING,
-  ERROR,
+  IDLE, FETCH_KEY, PREPARE, CREATE_SESSION, UPLOAD_CHUNKS,
+  EVENTS, COMPLETE, CONFIRM, DONE, NOTHING, ERROR,
 };
 
 static VsServerStage vsServerStage = VsServerStage::IDLE;
@@ -167,35 +154,26 @@ static void vsDrawServerSync(bool force = false) {
   if (state != AppState::SYNC) return;
   if (!force && millis() - vsServerLastDrawMs < 200) return;
   vsServerLastDrawMs = millis();
-
   drawHeader("SERVER SYNC");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, 150, C_BG);
   centeredText(58, vsStageName(vsServerStage),
                vsServerStage == VsServerStage::ERROR ? C_RED :
-               ((vsServerStage == VsServerStage::DONE || vsServerStage == VsServerStage::NOTHING) ? C_GREEN : C_NAVY),
-               2);
-
+               ((vsServerStage == VsServerStage::DONE || vsServerStage == VsServerStage::NOTHING) ? C_GREEN : C_NAVY), 2);
   String wifiLine = String("WIFI  ") + (WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "-");
   centeredText(83, wifiLine.c_str(), C_GREY, 1);
-
   if (vsServerSessionPrefix.length()) {
     String s = String("SESSIE  ") + vsServerSessionPrefix;
     centeredText(105, s.c_str(), C_NAVY, 1);
   }
   if (vsServerStage == VsServerStage::UPLOAD_CHUNKS && vsServerChunkTotal) {
     char p[48];
-    snprintf(p, sizeof(p), "CHUNK %lu / %lu",
-             (unsigned long)vsServerChunkCurrent,
-             (unsigned long)vsServerChunkTotal);
+    snprintf(p, sizeof(p), "CHUNK %lu / %lu", (unsigned long)vsServerChunkCurrent, (unsigned long)vsServerChunkTotal);
     centeredText(128, p, C_BLUE, 2);
   } else if (vsServerSessionsTotal) {
     char p[48];
-    snprintf(p, sizeof(p), "SESSIES %lu / %lu",
-             (unsigned long)vsServerSessionsDone,
-             (unsigned long)vsServerSessionsTotal);
+    snprintf(p, sizeof(p), "SESSIES %lu / %lu", (unsigned long)vsServerSessionsDone, (unsigned long)vsServerSessionsTotal);
     centeredText(128, p, C_BLUE, 1);
   }
-
   if (vsServerStage == VsServerStage::ERROR) {
     String e = vsServerError;
     if (e.length() > 45) e = e.substring(0, 45);
@@ -206,7 +184,6 @@ static void vsDrawServerSync(bool force = false) {
     if (m.length() > 45) m = m.substring(0, 45);
     if (m.length()) centeredText(158, m.c_str(), C_GREY, 1);
   }
-
   zone(SYNC_RETRY, "OPNIEUW", C_TEAL, C_WHITE);
   zone(SYNC_BACK, "TERUG", C_NAVY, C_WHITE);
 }
@@ -288,8 +265,7 @@ static String vsRandomUuid() {
   char out[37];
   snprintf(out, sizeof(out),
            "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-           b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+           b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
   return String(out);
 }
 
@@ -298,7 +274,9 @@ static String vsSyncPath(const String& prefix) {
 }
 
 static bool vsReadSyncMeta(const String& prefix, String& uuid, String& syncState) {
-  File f = SD.open(vsSyncPath(prefix), FILE_READ);
+  String path = vsSyncPath(prefix);
+  if (!SD.exists(path)) return false;
+  File f = SD.open(path, FILE_READ);
   if (!f) return false;
   while (f.available()) {
     String line = f.readStringUntil('\n');
@@ -357,16 +335,12 @@ static std::vector<String> vsCollectWavs(const String& prefix) {
   for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
     if (!f.isDirectory()) {
       String base = vsBaseName(f.name());
-      if (base.startsWith(prefix + "_") && base.endsWith(".wav")) {
-        wavs.push_back(String("/visitescribe/") + base);
-      }
+      if (base.startsWith(prefix + "_") && base.endsWith(".wav")) wavs.push_back(String("/visitescribe/") + base);
     }
     f.close();
   }
   dir.close();
-  std::sort(wavs.begin(), wavs.end(), [](const String& a, const String& b) {
-    return a.compareTo(b) < 0;
-  });
+  std::sort(wavs.begin(), wavs.end(), [](const String& a, const String& b) { return a.compareTo(b) < 0; });
   return wavs;
 }
 
@@ -399,12 +373,8 @@ static std::vector<String> vsPendingPrefixes() {
     f.close();
   }
   dir.close();
-  std::sort(prefixes.begin(), prefixes.end(), [](const String& a, const String& b) {
-    return a.compareTo(b) < 0;
-  });
-  prefixes.erase(std::unique(prefixes.begin(), prefixes.end(), [](const String& a, const String& b) {
-    return a == b;
-  }), prefixes.end());
+  std::sort(prefixes.begin(), prefixes.end(), [](const String& a, const String& b) { return a.compareTo(b) < 0; });
+  prefixes.erase(std::unique(prefixes.begin(), prefixes.end(), [](const String& a, const String& b) { return a == b; }), prefixes.end());
   return prefixes;
 }
 
@@ -421,10 +391,8 @@ static bool vsLoadLocalSession(const String& prefix, VsLocalSession& out) {
 
 static bool vsReadWavHeader(File& f, WAVHeader& h) {
   if (f.read(reinterpret_cast<uint8_t*>(&h), sizeof(h)) != sizeof(h)) return false;
-  if (memcmp(h.riff, "RIFF", 4) || memcmp(h.wave, "WAVE", 4) ||
-      memcmp(h.fmt, "fmt ", 4) || memcmp(h.data, "data", 4)) return false;
-  if (h.audioFormat != 1 || h.numChannels == 0 || h.sampleRate == 0 ||
-      h.bitsPerSample != 16 || h.blockAlign == 0 || h.byteRate == 0) return false;
+  if (memcmp(h.riff, "RIFF", 4) || memcmp(h.wave, "WAVE", 4) || memcmp(h.fmt, "fmt ", 4) || memcmp(h.data, "data", 4)) return false;
+  if (h.audioFormat != 1 || h.numChannels == 0 || h.sampleRate == 0 || h.bitsPerSample != 16 || h.blockAlign == 0 || h.byteRate == 0) return false;
   return true;
 }
 
@@ -445,8 +413,7 @@ static bool vsEnsureChunkBuffers(size_t plainNeeded) {
   vsPlainCapacity = plainNeeded;
   vsCipherCapacity = cipherNeeded;
   Serial.printf("SERVER: allocated sync buffers plain=%u cipher=%u PSRAM free=%u\n",
-                (unsigned)plainNeeded, (unsigned)cipherNeeded,
-                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+                (unsigned)plainNeeded, (unsigned)cipherNeeded, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
   return true;
 }
 
@@ -462,8 +429,7 @@ static bool vsSessionKey(const String& uuid, uint8_t out[32]) {
   return vsHmacSha256(vsDeviceRootKey, sizeof(vsDeviceRootKey), String("session:") + uuid, out);
 }
 
-static bool vsChunkNonce(const uint8_t sessionKey[32], const String& uuid,
-                         uint32_t sequence, uint8_t nonce[VS_GCM_NONCE_BYTES]) {
+static bool vsChunkNonce(const uint8_t sessionKey[32], const String& uuid, uint32_t sequence, uint8_t nonce[VS_GCM_NONCE_BYTES]) {
   uint8_t full[32];
   String msg = String("nonce:") + uuid + ":" + String(sequence);
   if (!vsHmacSha256(sessionKey, 32, msg, full)) return false;
@@ -471,9 +437,23 @@ static bool vsChunkNonce(const uint8_t sessionKey[32], const String& uuid,
   return true;
 }
 
+static bool vsDescribeChunk(const WAVHeader& sourceHeader, uint32_t dataBytes,
+                            const uint8_t sessionKey[32], const String& uuid,
+                            uint32_t sequence, VsChunkMeta& meta) {
+  if (dataBytes == 0 || sourceHeader.byteRate == 0) return false;
+  uint8_t nonce[VS_GCM_NONCE_BYTES];
+  if (!vsChunkNonce(sessionKey, uuid, sequence, nonce)) return false;
+  meta.sequence = sequence;
+  meta.aad = String("visitescribe-v2:") + uuid + ":" + String(sequence);
+  meta.nonceB64 = vsBase64(nonce, sizeof(nonce));
+  meta.plaintextBytes = sizeof(WAVHeader) + dataBytes;
+  meta.ciphertextBytes = meta.plaintextBytes + VS_GCM_TAG_BYTES;
+  meta.durationMs = static_cast<uint32_t>((static_cast<uint64_t>(dataBytes) * 1000ULL) / sourceHeader.byteRate);
+  return meta.nonceB64.length() > 0;
+}
+
 static bool vsEncryptChunk(const uint8_t sessionKey[32], const String& uuid,
-                           uint32_t sequence, size_t plaintextLen,
-                           VsChunkMeta& meta) {
+                           uint32_t sequence, size_t plaintextLen, VsChunkMeta& meta) {
   uint8_t nonce[VS_GCM_NONCE_BYTES];
   if (!vsChunkNonce(sessionKey, uuid, sequence, nonce)) return false;
   meta.sequence = sequence;
@@ -482,18 +462,14 @@ static bool vsEncryptChunk(const uint8_t sessionKey[32], const String& uuid,
   meta.plaintextBytes = plaintextLen;
   meta.plaintextSha256 = vsSha256Hex(vsPlain, plaintextLen);
   if (!meta.nonceB64.length() || !meta.plaintextSha256.length()) return false;
-
   mbedtls_gcm_context gcm;
   mbedtls_gcm_init(&gcm);
   int rc = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, sessionKey, 256);
   uint8_t tag[VS_GCM_TAG_BYTES];
   if (rc == 0) {
-    rc = mbedtls_gcm_crypt_and_tag(
-        &gcm, MBEDTLS_GCM_ENCRYPT, plaintextLen,
-        nonce, sizeof(nonce),
-        reinterpret_cast<const unsigned char*>(meta.aad.c_str()), meta.aad.length(),
-        vsPlain, vsCipher,
-        sizeof(tag), tag);
+    rc = mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, plaintextLen,
+        nonce, sizeof(nonce), reinterpret_cast<const unsigned char*>(meta.aad.c_str()), meta.aad.length(),
+        vsPlain, vsCipher, sizeof(tag), tag);
   }
   mbedtls_gcm_free(&gcm);
   if (rc != 0) return false;
@@ -505,25 +481,21 @@ static bool vsEncryptChunk(const uint8_t sessionKey[32], const String& uuid,
 
 static bool vsPrepareNextChunk(File& wav, const WAVHeader& sourceHeader,
                                uint32_t& remaining, const uint8_t sessionKey[32],
-                               const String& uuid, uint32_t sequence,
-                               VsChunkMeta& meta) {
+                               const String& uuid, uint32_t sequence, VsChunkMeta& meta) {
   const uint32_t wanted = sourceHeader.byteRate * VS_SYNC_CHUNK_SECONDS;
   uint32_t dataBytes = remaining < wanted ? remaining : wanted;
   dataBytes -= dataBytes % sourceHeader.blockAlign;
   if (dataBytes == 0) return false;
   const size_t plainLen = sizeof(WAVHeader) + dataBytes;
   if (!vsEnsureChunkBuffers(sizeof(WAVHeader) + wanted)) return false;
-
   WAVHeader chunkHeader = sourceHeader;
   chunkHeader.fileSize = 36 + dataBytes;
   chunkHeader.dataSize = dataBytes;
   memcpy(vsPlain, &chunkHeader, sizeof(chunkHeader));
   if (wav.read(vsPlain + sizeof(WAVHeader), dataBytes) != dataBytes) return false;
   remaining -= dataBytes;
-
   if (!vsEncryptChunk(sessionKey, uuid, sequence, plainLen, meta)) return false;
-  meta.durationMs = static_cast<uint32_t>((static_cast<uint64_t>(dataBytes) * 1000ULL) /
-                                          sourceHeader.byteRate);
+  meta.durationMs = static_cast<uint32_t>((static_cast<uint64_t>(dataBytes) * 1000ULL) / sourceHeader.byteRate);
   return true;
 }
 
@@ -550,18 +522,14 @@ static bool vsJsonExtractString(const String& json, const char* key, String& out
       else if (e == '\\') out += '\\';
       else if (e == '/') out += '/';
       else return false;
-    } else {
-      out += c;
-    }
+    } else out += c;
   }
   return false;
 }
 
 static void vsAddCommonHeaders(HTTPClient& http) {
   http.addHeader("X-Device-ID", VISITESCRIBE_DEVICE_ID);
-  if (strlen(VISITESCRIBE_DEVICE_TOKEN)) {
-    http.addHeader("Authorization", String("Bearer ") + VISITESCRIBE_DEVICE_TOKEN);
-  }
+  if (strlen(VISITESCRIBE_DEVICE_TOKEN)) http.addHeader("Authorization", String("Bearer ") + VISITESCRIBE_DEVICE_TOKEN);
 }
 
 static bool vsBeginHttp(HTTPClient& http, const String& url) {
@@ -597,8 +565,7 @@ static bool vsFetchServerKey(String& keyId, String& publicPem) {
   }
   String body = http.getString();
   http.end();
-  if (!vsJsonExtractString(body, "key_id", keyId) ||
-      !vsJsonExtractString(body, "public_key_pem", publicPem)) {
+  if (!vsJsonExtractString(body, "key_id", keyId) || !vsJsonExtractString(body, "public_key_pem", publicPem)) {
     return vsFail("Server public-key JSON ongeldig");
   }
   Serial.printf("SERVER: public key %s, PEM bytes=%u\n", keyId.c_str(), (unsigned)publicPem.length());
@@ -610,12 +577,10 @@ static int vsRng(void*, unsigned char* output, size_t len) {
   return 0;
 }
 
-static bool vsWrapSessionKey(const uint8_t sessionKey[32], const String& publicPem,
-                             String& wrappedB64) {
+static bool vsWrapSessionKey(const uint8_t sessionKey[32], const String& publicPem, String& wrappedB64) {
   mbedtls_pk_context pk;
   mbedtls_pk_init(&pk);
-  int rc = mbedtls_pk_parse_public_key(
-      &pk, reinterpret_cast<const unsigned char*>(publicPem.c_str()), publicPem.length() + 1);
+  int rc = mbedtls_pk_parse_public_key(&pk, reinterpret_cast<const unsigned char*>(publicPem.c_str()), publicPem.length() + 1);
   if (rc != 0 || !mbedtls_pk_can_do(&pk, MBEDTLS_PK_RSA)) {
     mbedtls_pk_free(&pk);
     Serial.printf("SERVER: RSA public key parse failed rc=%d\n", rc);
@@ -625,9 +590,7 @@ static bool vsWrapSessionKey(const uint8_t sessionKey[32], const String& publicP
   mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
   size_t outLen = mbedtls_pk_get_len(&pk);
   std::vector<uint8_t> wrapped(outLen);
-  rc = mbedtls_rsa_rsaes_oaep_encrypt(
-      rsa, vsRng, nullptr, MBEDTLS_RSA_PUBLIC,
-      nullptr, 0, 32, sessionKey, wrapped.data());
+  rc = mbedtls_rsa_rsaes_oaep_encrypt(rsa, vsRng, nullptr, MBEDTLS_RSA_PUBLIC, nullptr, 0, 32, sessionKey, wrapped.data());
   mbedtls_pk_free(&pk);
   if (rc != 0) {
     Serial.printf("SERVER: RSA OAEP wrap failed rc=%d\n", rc);
@@ -637,6 +600,10 @@ static bool vsWrapSessionKey(const uint8_t sessionKey[32], const String& publicP
   return wrappedB64.length() > 0;
 }
 
+// Fast manifest pass: describe chunks from WAV headers and deterministic nonce
+// metadata only. Hashing and AES-GCM are intentionally deferred to the single
+// upload pass; the server treats manifest hashes as optional and verifies both
+// required hashes from the PUT headers and uploaded bytes.
 static bool vsWriteManifest(const VsLocalSession& session,
                             const uint8_t sessionKey[32],
                             const String& serverKeyId,
@@ -645,7 +612,6 @@ static bool vsWriteManifest(const VsLocalSession& session,
                             uint32_t& chunkCount) {
   File manifest = SD.open(manifestPath, FILE_WRITE);
   if (!manifest) return vsFail("Manifest bestand niet te maken");
-
   WAVHeader firstHeader;
   {
     File first = SD.open(session.wavs.front(), FILE_READ);
@@ -656,7 +622,6 @@ static bool vsWriteManifest(const VsLocalSession& session,
     }
     first.close();
   }
-
   manifest.printf(
       "{\"schema_version\":2,\"session_id\":\"%s\",\"device_id\":\"%s\","
       "\"mode\":\"%s\",\"status\":\"complete\","
@@ -669,6 +634,7 @@ static bool vsWriteManifest(const VsLocalSession& session,
       (unsigned long)firstHeader.sampleRate, (unsigned)firstHeader.numChannels,
       (unsigned long)VS_SYNC_CHUNK_SECONDS, serverKeyId.c_str(), wrappedKeyB64.c_str());
 
+  const uint32_t manifestStarted = millis();
   bool firstChunk = true;
   chunkCount = 0;
   uint64_t audioOffsetMs = 0;
@@ -680,46 +646,50 @@ static bool vsWriteManifest(const VsLocalSession& session,
       manifest.close();
       return vsFail(String("WAV lezen mislukt: ") + path);
     }
-    if (h.sampleRate != firstHeader.sampleRate || h.numChannels != firstHeader.numChannels ||
-        h.bitsPerSample != firstHeader.bitsPerSample) {
+    if (h.sampleRate != firstHeader.sampleRate || h.numChannels != firstHeader.numChannels || h.bitsPerSample != firstHeader.bitsPerSample) {
       wav.close();
       manifest.close();
       return vsFail("WAV parameters verschillen binnen sessie");
     }
+    const uint32_t wanted = h.byteRate * VS_SYNC_CHUNK_SECONDS;
     uint32_t remaining = h.dataSize;
     while (remaining) {
-      VsChunkMeta meta;
-      ++chunkCount;
-      if (!vsPrepareNextChunk(wav, h, remaining, sessionKey, session.uuid, chunkCount, meta)) {
+      uint32_t dataBytes = remaining < wanted ? remaining : wanted;
+      dataBytes -= dataBytes % h.blockAlign;
+      if (dataBytes == 0) {
         wav.close();
         manifest.close();
-        return vsFail("Audio chunk voorbereiden mislukt");
+        return vsFail("Audio chunk beschrijven mislukt");
       }
+      ++chunkCount;
+      VsChunkMeta meta;
+      if (!vsDescribeChunk(h, dataBytes, sessionKey, session.uuid, chunkCount, meta)) {
+        wav.close();
+        manifest.close();
+        return vsFail("Audio chunk metadata mislukt");
+      }
+      remaining -= dataBytes;
       if (!firstChunk) manifest.print(',');
       firstChunk = false;
       manifest.printf(
           "{\"sequence\":%lu,\"file\":\"audio/chunk-%06lu.wav.enc\","
           "\"nonce_b64\":\"%s\",\"aad\":\"%s\","
-          "\"plaintext_sha256\":\"%s\",\"ciphertext_sha256\":\"%s\","
           "\"plaintext_size\":%u,\"ciphertext_size\":%u,"
           "\"start_offset_ms\":%llu,\"duration_ms\":%lu}",
           (unsigned long)meta.sequence, (unsigned long)meta.sequence,
           meta.nonceB64.c_str(), meta.aad.c_str(),
-          meta.plaintextSha256.c_str(), meta.ciphertextSha256.c_str(),
           (unsigned)meta.plaintextBytes, (unsigned)meta.ciphertextBytes,
           (unsigned long long)audioOffsetMs, (unsigned long)meta.durationMs);
       audioOffsetMs += meta.durationMs;
-      if ((chunkCount % 8) == 0) {
-        manifest.flush();
-        vsServerMessage = String("Manifest chunk ") + chunkCount;
-        vsDrawServerSync(true);
-      }
+      if ((chunkCount % 32) == 0) manifest.flush();
     }
     wav.close();
   }
   manifest.print("]}");
   manifest.flush();
   manifest.close();
+  Serial.printf("SERVER: fast manifest chunks=%lu built=%lums (no audio hash/encrypt pass)\n",
+                (unsigned long)chunkCount, (unsigned long)(millis() - manifestStarted));
   return chunkCount > 0;
 }
 
@@ -749,8 +719,7 @@ static bool vsPostManifest(const VsLocalSession& session, const String& manifest
 
 static bool vsPutChunk(const VsLocalSession& session, const VsChunkMeta& meta) {
   HTTPClient http;
-  String url = String(VISITESCRIBE_SERVER_BASE_URL) + "/v1/sessions/" + session.uuid +
-               "/chunks/" + String(meta.sequence);
+  String url = String(VISITESCRIBE_SERVER_BASE_URL) + "/v1/sessions/" + session.uuid + "/chunks/" + String(meta.sequence);
   if (!vsBeginHttp(http, url)) return vsFail("HTTPS chunk start mislukt");
   http.addHeader("Content-Type", "application/octet-stream");
   http.addHeader("X-Chunk-SHA256", meta.ciphertextSha256);
@@ -768,11 +737,12 @@ static bool vsPutChunk(const VsLocalSession& session, const VsChunkMeta& meta) {
   return true;
 }
 
-static bool vsUploadChunks(const VsLocalSession& session, const uint8_t sessionKey[32],
-                           uint32_t expectedChunks) {
+static bool vsUploadChunks(const VsLocalSession& session, const uint8_t sessionKey[32], uint32_t expectedChunks) {
   vsServerStage = VsServerStage::UPLOAD_CHUNKS;
   vsServerChunkTotal = expectedChunks;
   vsServerChunkCurrent = 0;
+  const uint32_t uploadStarted = millis();
+  uint64_t uploadedBytes = 0;
   uint32_t sequence = 0;
   for (const auto& path : session.wavs) {
     File wav = SD.open(path, FILE_READ);
@@ -785,28 +755,40 @@ static bool vsUploadChunks(const VsLocalSession& session, const uint8_t sessionK
     while (remaining) {
       VsChunkMeta meta;
       ++sequence;
+      const uint32_t prepStarted = millis();
       if (!vsPrepareNextChunk(wav, h, remaining, sessionKey, session.uuid, sequence, meta)) {
         wav.close();
         return vsFail("Chunk opnieuw opbouwen mislukt");
       }
+      const uint32_t prepMs = millis() - prepStarted;
       vsServerChunkCurrent = sequence;
-      vsServerMessage = String("Encrypt + upload ") + sequence;
+      vsServerMessage = String("Upload ") + sequence;
       vsDrawServerSync(true);
+      const uint32_t httpStarted = millis();
       if (!vsPutChunk(session, meta)) {
         wav.close();
         return false;
       }
-      Serial.printf("SERVER: chunk %lu/%lu accepted\n",
-                    (unsigned long)sequence, (unsigned long)expectedChunks);
+      const uint32_t httpMs = millis() - httpStarted;
+      uploadedBytes += meta.ciphertextBytes;
+      const uint32_t kibPerSec = httpMs ? static_cast<uint32_t>((static_cast<uint64_t>(meta.ciphertextBytes) * 1000ULL) / (1024ULL * httpMs)) : 0;
+      Serial.printf("SERVER: chunk %lu/%lu accepted prep=%lums upload=%lums rate=%lu KiB/s bytes=%u\n",
+                    (unsigned long)sequence, (unsigned long)expectedChunks,
+                    (unsigned long)prepMs, (unsigned long)httpMs,
+                    (unsigned long)kibPerSec, (unsigned)meta.ciphertextBytes);
       delay(1);
     }
     wav.close();
   }
+  const uint32_t totalMs = millis() - uploadStarted;
+  const uint32_t avgKibPerSec = totalMs ? static_cast<uint32_t>((uploadedBytes * 1000ULL) / (1024ULL * totalMs)) : 0;
+  Serial.printf("SERVER: audio upload complete chunks=%lu bytes=%llu total=%lums avg=%lu KiB/s\n",
+                (unsigned long)sequence, (unsigned long long)uploadedBytes,
+                (unsigned long)totalMs, (unsigned long)avgKibPerSec);
   return sequence == expectedChunks;
 }
 
-static bool vsParseCsvEvent(const String& line, uint32_t& offsetMs,
-                            String& eventName, int& patientIndex) {
+static bool vsParseCsvEvent(const String& line, uint32_t& offsetMs, String& eventName, int& patientIndex) {
   int c1 = line.indexOf(',');
   if (c1 <= 0) return false;
   int c2 = line.indexOf(',', c1 + 1);
@@ -843,7 +825,6 @@ static bool vsPostEvents(const VsLocalSession& session) {
   }
   f.close();
   payload += "]}";
-
   HTTPClient http;
   String url = String(VISITESCRIBE_SERVER_BASE_URL) + "/v1/sessions/" + session.uuid + "/events";
   if (!vsBeginHttp(http, url)) return vsFail("HTTPS events start mislukt");
@@ -878,15 +859,10 @@ static bool vsComplete(const VsLocalSession& session, uint32_t chunkCount) {
 }
 
 static bool vsStatusConfirmed(const String& body) {
-  if (body.indexOf("\"ingest_confirmed\":true") >= 0 ||
-      body.indexOf("\"ingest_confirmed\": true") >= 0) return true;
-  static const char* states[] = {
-    "INGESTED", "READY_FOR_PROCESSING", "TRANSCRIBING", "PROCESSING",
-    "REVIEW_REQUIRED", "APPROVED"
-  };
+  if (body.indexOf("\"ingest_confirmed\":true") >= 0 || body.indexOf("\"ingest_confirmed\": true") >= 0) return true;
+  static const char* states[] = { "INGESTED", "READY_FOR_PROCESSING", "TRANSCRIBING", "PROCESSING", "REVIEW_REQUIRED", "APPROVED" };
   for (const char* s : states) {
-    if (body.indexOf(String("\"state\":\"") + s + "\"") >= 0 ||
-        body.indexOf(String("\"state\": \"") + s + "\"") >= 0) return true;
+    if (body.indexOf(String("\"state\":\"") + s + "\"") >= 0 || body.indexOf(String("\"state\": \"") + s + "\"") >= 0) return true;
   }
   return false;
 }
@@ -912,17 +888,15 @@ static bool vsConfirm(const VsLocalSession& session) {
   return true;
 }
 
-static bool vsSyncOne(const VsLocalSession& session,
-                      const String& serverKeyId, const String& serverPublicPem) {
+static bool vsSyncOne(const VsLocalSession& session, const String& serverKeyId, const String& serverPublicPem) {
+  const uint32_t sessionStarted = millis();
   vsServerSessionPrefix = session.prefix;
   vsServerChunkCurrent = vsServerChunkTotal = 0;
   vsSetStage(VsServerStage::PREPARE, session.prefix);
-
   uint8_t sessionKey[32];
   if (!vsSessionKey(session.uuid, sessionKey)) return vsFail("Sessiesleutel maken mislukt");
   String wrappedKey;
   if (!vsWrapSessionKey(sessionKey, serverPublicPem, wrappedKey)) return vsFail("RSA key wrap mislukt");
-
   String manifestPath = String("/visitescribe/") + session.prefix + "_upload_manifest.json";
   if (SD.exists(manifestPath)) SD.remove(manifestPath);
   uint32_t chunkCount = 0;
@@ -931,7 +905,6 @@ static bool vsSyncOne(const VsLocalSession& session,
     return false;
   }
   vsServerChunkTotal = chunkCount;
-
   bool ok = vsPostManifest(session, manifestPath) &&
             vsUploadChunks(session, sessionKey, chunkCount) &&
             vsPostEvents(session) &&
@@ -940,11 +913,9 @@ static bool vsSyncOne(const VsLocalSession& session,
   SD.remove(manifestPath);
   memset(sessionKey, 0, sizeof(sessionKey));
   if (!ok) return false;
-
-  if (!vsWriteSyncMeta(session.prefix, session.uuid, "ingested")) {
-    return vsFail("Server OK, maar lokale sync-status schrijven faalde");
-  }
+  if (!vsWriteSyncMeta(session.prefix, session.uuid, "ingested")) return vsFail("Server OK, maar lokale sync-status schrijven faalde");
   ++vsServerSessionsDone;
+  Serial.printf("SERVER: session %s complete in %lums\n", session.prefix.c_str(), (unsigned long)(millis() - sessionStarted));
   return true;
 }
 
@@ -952,7 +923,6 @@ static bool vsSyncAllPending() {
   if (WiFi.status() != WL_CONNECTED) return vsFail("WiFi niet verbonden");
   if (!sdOk) return vsFail("microSD niet beschikbaar");
   if (!vsEnsureDeviceRootKey()) return vsFail("Device root key niet beschikbaar");
-
   auto prefixes = vsPendingPrefixes();
   vsServerSessionsTotal = prefixes.size();
   vsServerSessionsDone = 0;
@@ -960,10 +930,8 @@ static bool vsSyncAllPending() {
     vsSetStage(VsServerStage::NOTHING, "Alle opnames zijn gesynchroniseerd");
     return true;
   }
-
   String serverKeyId, serverPublicPem;
   if (!vsFetchServerKey(serverKeyId, serverPublicPem)) return false;
-
   for (const auto& prefix : prefixes) {
     if (WiFi.status() != WL_CONNECTED) return vsFail("WiFi verbinding verloren");
     VsLocalSession local;
@@ -982,20 +950,15 @@ static void vsServiceServerSync() {
     }
     return;
   }
-
-  // A manual OPNIEUW sends the inherited Wi-Fi state back to CONNECTING.
-  // Arm a fresh server attempt as soon as connectivity returns.
   if (syncPhase != SyncPhase::CONNECTED) {
     if (!vsServerSyncRunning &&
-        (vsServerStage == VsServerStage::DONE || vsServerStage == VsServerStage::NOTHING ||
-         vsServerStage == VsServerStage::ERROR)) {
+        (vsServerStage == VsServerStage::DONE || vsServerStage == VsServerStage::NOTHING || vsServerStage == VsServerStage::ERROR)) {
       vsServerStage = VsServerStage::IDLE;
       vsServerSessionPrefix = "";
       vsServerError = "";
     }
     return;
   }
-
   if (vsServerStage != VsServerStage::IDLE || vsServerSyncRunning) return;
   vsServerSyncRunning = true;
   noteActivity();
@@ -1007,12 +970,10 @@ static void vsServiceServerSync() {
 
 void setup() {
   setup_v05();
-  if (!vsEnsureDeviceRootKey()) {
-    Serial.println("SERVER: WARNING device root key unavailable");
-  }
+  if (!vsEnsureDeviceRootKey()) Serial.println("SERVER: WARNING device root key unavailable");
   vsTls.setCACert(VISITESCRIBE_SERVER_CA_PEM);
   vsTlsReady = true;
-  Serial.printf("VisiteScribe CoreS3-Lite v0.6; server=%s device=%s auth=%s\n",
+  Serial.printf("VisiteScribe CoreS3-Lite v0.6-fast; server=%s device=%s auth=%s\n",
                 VISITESCRIBE_SERVER_BASE_URL, VISITESCRIBE_DEVICE_ID,
                 strlen(VISITESCRIBE_DEVICE_TOKEN) ? "token" : "device-id");
 }
@@ -1020,8 +981,7 @@ void setup() {
 void loop() {
   loop_v05();
   vsServiceServerSync();
-  if (state == AppState::SYNC &&
-      (syncPhase == SyncPhase::CONNECTED || vsServerStage != VsServerStage::IDLE)) {
+  if (state == AppState::SYNC && (syncPhase == SyncPhase::CONNECTED || vsServerStage != VsServerStage::IDLE)) {
     vsDrawServerSync(false);
   }
 }
