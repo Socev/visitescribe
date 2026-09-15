@@ -5,10 +5,8 @@
 // was still near the Unix epoch, causing X509 verification to fail before the
 // request ever reached the API.
 //
-// This thin wrapper keeps v0.6 intact, but provides a strong initVariant():
-// - seed the system clock from the firmware build timestamp as a safe floor;
-// - start SNTP before setup(), so it can correct the clock as soon as Wi-Fi is
-//   available.
+// This thin wrapper keeps the clock/SNTP fix and now routes the sync leaf to
+// v0.6.6, which retains the same recorder stack while optimizing upload.
 //
 // The build-time seed is not the long-term time source; SNTP is. It merely
 // prevents the first TLS handshake from running with an obviously invalid date.
@@ -72,4 +70,4 @@ void initVariant() {
              "time.google.com");
 }
 
-#include "main_v06.cpp"
+#include "main_v066.cpp"
