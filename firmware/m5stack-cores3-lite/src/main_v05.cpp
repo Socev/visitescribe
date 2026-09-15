@@ -9,11 +9,11 @@
 // profile is applied immediately after each transition into active capture
 // (initial start, privacy resume, next patient, append/resume).
 
-#define setup setup_v04
-#define loop loop_v04
+#define VISITESCRIBE_V04_SETUP_NAME setup_v04
+#define VISITESCRIBE_V04_LOOP_NAME loop_v04
 #include "main_v04.cpp"
-#undef setup
-#undef loop
+#undef VISITESCRIBE_V04_SETUP_NAME
+#undef VISITESCRIBE_V04_LOOP_NAME
 
 static constexpr uint8_t ES7210_ADDR = 0x40;
 static constexpr uint8_t ES7210_MIC_GAIN_37_5DB = 0x1E; // 0x10 | gain code 14
