@@ -9,6 +9,15 @@
 // wifi_secrets.h may define VISITESCRIBE_WIFI_SSID_3 and
 // VISITESCRIBE_WIFI_PASSWORD_3; empty profiles are skipped automatically.
 
+#ifndef VISITESCRIBE_V05_SETUP_NAME
+#define VISITESCRIBE_V05_SETUP_NAME setup
+#define VISITESCRIBE_V05_SETUP_NAME_LOCAL 1
+#endif
+#ifndef VISITESCRIBE_V05_LOOP_NAME
+#define VISITESCRIBE_V05_LOOP_NAME loop
+#define VISITESCRIBE_V05_LOOP_NAME_LOCAL 1
+#endif
+
 #define VISITESCRIBE_V04_SETUP_NAME setup_v04
 #define VISITESCRIBE_V04_LOOP_NAME loop_v04
 #include "main_v04.cpp"
@@ -158,7 +167,7 @@ static void serviceSyncV05() {
 #endif
 }
 
-void setup() {
+void VISITESCRIBE_V05_SETUP_NAME() {
   setup_v04();
   Serial.printf("VisiteScribe CoreS3-Lite v0.5.1; speech=37.5dB+6dB; wifi profiles=%d%d%d\n",
                 wifiProfileConfiguredV05(0) ? 1 : 0,
@@ -166,7 +175,7 @@ void setup() {
                 wifiProfileConfiguredV05(2) ? 1 : 0);
 }
 
-void loop() {
+void VISITESCRIBE_V05_LOOP_NAME() {
   // Reproduce the proven v0.3/v0.4 runtime loop, but use the v0.5 Wi-Fi
   // sequencer instead of the inherited two-profile serviceSync().
   serviceInputsV03();
@@ -199,3 +208,12 @@ void loop() {
   serviceDisplayPower();
   delay(5);
 }
+
+#ifdef VISITESCRIBE_V05_SETUP_NAME_LOCAL
+#undef VISITESCRIBE_V05_SETUP_NAME_LOCAL
+#undef VISITESCRIBE_V05_SETUP_NAME
+#endif
+#ifdef VISITESCRIBE_V05_LOOP_NAME_LOCAL
+#undef VISITESCRIBE_V05_LOOP_NAME_LOCAL
+#undef VISITESCRIBE_V05_LOOP_NAME
+#endif
