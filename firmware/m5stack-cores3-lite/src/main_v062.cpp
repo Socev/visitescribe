@@ -5,9 +5,13 @@
 // v0.6 used ISRG Root X1, which cannot validate that chain on the ESP32.
 //
 // Keep the v0.6.1 clock/NTP fix and override only the recorder-side default
-// trust anchor. A local server_secrets.h can still override this macro.
+// trust anchor. A local server_secrets.h may still override the CA.
 
 #include <Arduino.h>
+
+#if __has_include("server_secrets.h")
+#include "server_secrets.h"
+#endif
 
 static const char VS_GLOBALSIGN_ROOT_R1[] PROGMEM = R"VSCA(-----BEGIN CERTIFICATE-----
 MIIDdTCCAl2gAwIBAgILBAAAAAABFUtaw5QwDQYJKoZIhvcNAQEFBQAwVzELMAkG
