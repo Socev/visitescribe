@@ -78,15 +78,168 @@ static void vs064Free(void* ptr) {
 #undef free
 #undef heap_caps_malloc
 
-void serialEventRun() {
-  static bool printed = false;
-  if (printed) return;
-  printed = true;
+static void vs064ListVisiteScribeDir() {
+  Serial.println("SERVER DEBUG: === /visitescribe ===");
+  File dir = SD.open("/visitescribe");
+  if (!dir) {
+    Serial.println("SERVER DEBUG: /visitescribe openen mislukt");
+    return;
+  }
+
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    Serial.printf("SERVER DEBUG: %s size=%u dir=%d\n",
+                  f.name(),
+                  (unsigned)f.size(),
+                  f.isDirectory() ? 1 : 0);
+    f.close();
+  }
+  dir.close();
+  Serial.println("SERVER DEBUG: =====================");
+}
+
+static void vs064InspectWavRead(const String& path) {
+  File wav = SD.open(path, FILE_READ);
+  if (!wav) {
+    Serial.printf("SERVER DEBUG: WAV open mislukt path=%s\n", path.c_str());
+    return;
+  }
+
+  const size_t physicalBytes = wav.size();
+  WAVHeader h;
+  if (!vsReadWavHeader(wav, h)) {
+    Serial.printf("SERVER DEBUG: WAV header ongeldig path=%s physical=%u\n",
+                  path.c_str(), (unsigned)physicalBytes);
+    wav.close();
+    return;
+  }
+
+  const size_t payloadPos = wav.position();
+  const uint32_t wanted = h.byteRate * VS_SYNC_CHUNK_SECONDS;
+  uint32_t dataBytes = h.dataSize < wanted ? h.dataSize : wanted;
+  if (h.blockAlign) dataBytes -= dataBytes % h.blockAlign;
+  const size_t plainNeeded = sizeof(WAVHeader) + wanted;
+  const size_t firstChunkBytes = sizeof(WAVHeader) + dataBytes;
+  const size_t physicalPayload = physicalBytes > payloadPos ? physicalBytes - payloadPos : 0;
+
   Serial.printf(
-      "SERVER: v0.6.4 shared in-place sync buffer=%s bytes=%u psram_total=%u psram_free=%u psram_largest=%u\n",
-      vs064SharedReady ? "OK" : "FAIL",
-      (unsigned)VS064_SHARED_SYNC_BYTES,
+      "SERVER DEBUG: WAV path=%s physical=%u headerData=%u payloadPhysical=%u payloadPos=%u rate=%u channels=%u bits=%u byteRate=%u blockAlign=%u\n",
+      path.c_str(),
+      (unsigned)physicalBytes,
+      (unsigned)h.dataSize,
+      (unsigned)physicalPayload,
+      (unsigned)payloadPos,
+      (unsigned)h.sampleRate,
+      (unsigned)h.numChannels,
+      (unsigned)h.bitsPerSample,
+      (unsigned)h.byteRate,
+      (unsigned)h.blockAlign);
+  Serial.printf(
+      "SERVER DEBUG: chunk wantedData=%u dataBytes=%u plainNeeded=%u firstChunk=%u sharedReady=%d sharedBytes=%u\n",
+      (unsigned)wanted,
+      (unsigned)dataBytes,
+      (unsigned)plainNeeded,
+      (unsigned)firstChunkBytes,
+      vs064SharedReady ? 1 : 0,
+      (unsigned)VS064_SHARED_SYNC_BYTES);
+
+  if (!vs064SharedReady || !vs064SharedSyncBuffer) {
+    Serial.println("SERVER DEBUG: geen shared PSRAM-buffer voor read-probe");
+    wav.close();
+    return;
+  }
+  if (firstChunkBytes > VS064_SHARED_SYNC_BYTES) {
+    Serial.println("SERVER DEBUG: eerste chunk past niet in shared PSRAM-buffer");
+    wav.close();
+    return;
+  }
+  if (dataBytes == 0) {
+    Serial.println("SERVER DEBUG: dataBytes=0 na alignment");
+    wav.close();
+    return;
+  }
+
+  size_t gotSingle = wav.read(vs064SharedSyncBuffer + sizeof(WAVHeader), dataBytes);
+  Serial.printf("SERVER DEBUG: single-read requested=%u got=%u remainingAvailable=%u\n",
+                (unsigned)dataBytes,
+                (unsigned)gotSingle,
+                (unsigned)wav.available());
+
+  if (!wav.seek(payloadPos)) {
+    Serial.println("SERVER DEBUG: seek terug naar WAV payload mislukt");
+    wav.close();
+    return;
+  }
+
+  static constexpr size_t PROBE_READ_BYTES = 64U * 1024U;
+  size_t total = 0;
+  size_t reads = 0;
+  while (total < dataBytes) {
+    size_t request = dataBytes - total;
+    if (request > PROBE_READ_BYTES) request = PROBE_READ_BYTES;
+    size_t got = wav.read(vs064SharedSyncBuffer + sizeof(WAVHeader) + total, request);
+    ++reads;
+    total += got;
+    if (got == 0) break;
+  }
+  Serial.printf("SERVER DEBUG: chunked-read requested=%u got=%u reads=%u remainingAvailable=%u\n",
+                (unsigned)dataBytes,
+                (unsigned)total,
+                (unsigned)reads,
+                (unsigned)wav.available());
+  wav.close();
+}
+
+static void vs064DumpPrepareFailure() {
+  Serial.printf(
+      "SERVER DEBUG: PREPARE failure session=%s error=%s psram_total=%u psram_free=%u psram_largest=%u shared=%p ready=%d\n",
+      vsServerSessionPrefix.c_str(),
+      vsServerError.c_str(),
       (unsigned)ESP.getPsramSize(),
       (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+      (void*)vs064SharedSyncBuffer,
+      vs064SharedReady ? 1 : 0);
+
+  vs064ListVisiteScribeDir();
+
+  if (!vsServerSessionPrefix.length()) {
+    Serial.println("SERVER DEBUG: geen actuele sessieprefix");
+    return;
+  }
+
+  auto wavs = vsCollectWavs(vsServerSessionPrefix);
+  Serial.printf("SERVER DEBUG: sessie %s heeft %u WAV(s)\n",
+                vsServerSessionPrefix.c_str(), (unsigned)wavs.size());
+  for (const auto& path : wavs) {
+    vs064InspectWavRead(path);
+  }
+  Serial.println("SERVER DEBUG: einde PREPARE failure dump");
+}
+
+void serialEventRun() {
+  static bool bannerPrinted = false;
+  static bool prepareFailureDumped = false;
+
+  if (!bannerPrinted) {
+    bannerPrinted = true;
+    Serial.printf(
+        "SERVER: v0.6.4 shared in-place sync buffer=%s bytes=%u psram_total=%u psram_free=%u psram_largest=%u\n",
+        vs064SharedReady ? "OK" : "FAIL",
+        (unsigned)VS064_SHARED_SYNC_BYTES,
+        (unsigned)ESP.getPsramSize(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+  }
+
+  const bool prepareError =
+      vsServerStage == VsServerStage::ERROR &&
+      (vsServerError.indexOf("Audio chunk voorbereiden mislukt") >= 0 ||
+       vsServerError.indexOf("Chunk opnieuw opbouwen mislukt") >= 0);
+
+  if (prepareError && !prepareFailureDumped) {
+    prepareFailureDumped = true;
+    vs064DumpPrepareFailure();
+  } else if (!prepareError) {
+    prepareFailureDumped = false;
+  }
 }
