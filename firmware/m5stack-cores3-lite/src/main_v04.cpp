@@ -7,6 +7,18 @@
 // - verifies that the mounted card is writable before declaring SD OK
 // - emits concise serial diagnostics when mounting fails
 
+// Allow later firmware revisions to include v0.4 without colliding with the
+// Arduino setup()/loop() entrypoints. This mirrors the wrapper-safe pattern
+// already used by v0.3.
+#ifndef VISITESCRIBE_V04_SETUP_NAME
+#define VISITESCRIBE_V04_SETUP_NAME setup
+#define VISITESCRIBE_V04_SETUP_NAME_LOCAL 1
+#endif
+#ifndef VISITESCRIBE_V04_LOOP_NAME
+#define VISITESCRIBE_V04_LOOP_NAME loop
+#define VISITESCRIBE_V04_LOOP_NAME_LOCAL 1
+#endif
+
 #define VISITESCRIBE_V03_SETUP_NAME setup_v03
 #define VISITESCRIBE_V03_LOOP_NAME loop_v03
 #include "main_v03.cpp"
@@ -114,7 +126,7 @@ static bool robustSdMount() {
   return false;
 }
 
-void setup() {
+void VISITESCRIBE_V04_SETUP_NAME() {
   setup_v03();
 
   // The old path already tried once. Only do the slower/power-aware recovery
@@ -134,6 +146,15 @@ void setup() {
                 (unsigned long)(sdMountedHz / 1000000UL));
 }
 
-void loop() {
+void VISITESCRIBE_V04_LOOP_NAME() {
   loop_v03();
 }
+
+#ifdef VISITESCRIBE_V04_SETUP_NAME_LOCAL
+#undef VISITESCRIBE_V04_SETUP_NAME_LOCAL
+#undef VISITESCRIBE_V04_SETUP_NAME
+#endif
+#ifdef VISITESCRIBE_V04_LOOP_NAME_LOCAL
+#undef VISITESCRIBE_V04_LOOP_NAME_LOCAL
+#undef VISITESCRIBE_V04_LOOP_NAME
+#endif
