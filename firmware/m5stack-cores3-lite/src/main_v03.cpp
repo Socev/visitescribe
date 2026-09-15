@@ -9,6 +9,18 @@
 // sdOk was true, making the whole UI appear dead if SD initialisation failed.
 // Recording itself still remains safely gated inside startNewSession().
 
+// Allow a later firmware revision to include this implementation and rename
+// only v0.3's public setup()/loop() entry points. The nested v0.2 include is
+// always renamed independently, avoiding macro collisions in wrapper builds.
+#ifndef VISITESCRIBE_V03_SETUP_NAME
+#define VISITESCRIBE_V03_SETUP_NAME setup
+#define VISITESCRIBE_V03_SETUP_NAME_LOCAL 1
+#endif
+#ifndef VISITESCRIBE_V03_LOOP_NAME
+#define VISITESCRIBE_V03_LOOP_NAME loop
+#define VISITESCRIBE_V03_LOOP_NAME_LOCAL 1
+#endif
+
 #define setup setup_v02
 #define loop loop_v02
 #include "main_v02.cpp"
@@ -91,7 +103,7 @@ static void serviceInputsV03() {
   M5.update();
 }
 
-void setup() {
+void VISITESCRIBE_V03_SETUP_NAME() {
   setup_v02();
 
   axp2101DirectOk = M5.Power.Axp2101.begin();
@@ -115,7 +127,7 @@ void setup() {
                 (unsigned)M5.Display.getRotation());
 }
 
-void loop() {
+void VISITESCRIBE_V03_LOOP_NAME() {
   serviceInputsV03();
   serviceAudio();
   serviceSync();
@@ -134,3 +146,12 @@ void loop() {
   serviceDisplayPower();
   delay(5);
 }
+
+#ifdef VISITESCRIBE_V03_SETUP_NAME_LOCAL
+#undef VISITESCRIBE_V03_SETUP_NAME_LOCAL
+#undef VISITESCRIBE_V03_SETUP_NAME
+#endif
+#ifdef VISITESCRIBE_V03_LOOP_NAME_LOCAL
+#undef VISITESCRIBE_V03_LOOP_NAME_LOCAL
+#undef VISITESCRIBE_V03_LOOP_NAME
+#endif
