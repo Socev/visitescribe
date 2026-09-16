@@ -72,7 +72,11 @@ static void drawMenuV03() {
   // touch geometry is introduced into the proven base UI.
   zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
   zone(HOME_ROUND, "SYNC", C_TEAL, C_WHITE, "echte opnames uploaden");
+#ifdef VISITESCRIBE_OPUS_EXPERIMENT
+  zone(HOME_MEETING, "OPUS TEST", C_AMBER, C_NAVY, "5 min encoder benchmark");
+#else
   zone(HOME_MEETING, "SYNC TEST", C_AMBER, C_NAVY, "10 dummy chunks");
+#endif
   zone(HOME_MENU, "TERUG", C_NAVY, C_WHITE);
 }
 
