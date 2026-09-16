@@ -10,6 +10,12 @@
 // more stack than Arduino's normal loop task provides. The upstream ESP32
 // example also runs the codec in a 32000-byte FreeRTOS task. The benchmark does
 // the same instead of calling opus_encode() from loop().
+//
+// opus_encoder_create() in this old Arduino port performs a long, non-yielding
+// initialisation. On the S3 that can starve the idle task long enough to trip
+// the task watchdog. The probe is therefore pinned to Core 0 and removes ONLY
+// Core 0's idle task from the WDT during encoder creation. It restores the WDT
+// immediately afterwards. Normal opus_encode() calls remain watchdog-protected.
 
 #ifdef VISITESCRIBE_OPUS_EXPERIMENT
 
@@ -17,6 +23,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_heap_caps.h>
+#include <esp32-hal.h>
 
 static constexpr int VS070_RATE = 16000;
 static constexpr int VS070_CHANNELS = 1;
@@ -29,6 +36,7 @@ static constexpr int VS070_BLOCK_SECONDS = 30;
 static constexpr int VS070_FRAMES_PER_BLOCK = VS070_BLOCK_SECONDS * 1000 / VS070_FRAME_MS;
 static constexpr int VS070_MAX_PACKET = 512;
 static constexpr uint32_t VS070_TASK_STACK_BYTES = 32000;
+static constexpr BaseType_t VS070_TASK_CORE = 0;
 
 static volatile bool vs070TaskRunning = false;
 static volatile bool vs070TaskDone = false;
@@ -76,9 +84,11 @@ static void vs070GenerateSpeechLikeFrame(int16_t* pcm, uint32_t& phaseA,
 
 static bool vs070RunBenchmark() {
   const size_t encoderBytes = static_cast<size_t>(opus_encoder_get_size(VS070_CHANNELS));
+  const BaseType_t runningCore = xPortGetCoreID();
   Serial.printf(
-      "OPUS TEST: worker entered stack_hwm=%u encoder_state=%uB internal_free=%u "
+      "OPUS TEST: worker entered core=%d stack_hwm=%u encoder_state=%uB internal_free=%u "
       "internal_largest=%u psram_free=%u\n",
+      (int)runningCore,
       (unsigned)uxTaskGetStackHighWaterMark(nullptr),
       (unsigned)encoderBytes,
       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -87,20 +97,42 @@ static bool vs070RunBenchmark() {
   Serial.flush();
 
   int error = OPUS_OK;
-  Serial.println("OPUS TEST: creating encoder...");
+  Serial.printf("OPUS TEST: creating encoder; temporarily disabling Core%d IDLE WDT\n",
+                (int)runningCore);
   Serial.flush();
+
+  // This probe is pinned to Core 0. Keep the branch explicit so a future change
+  // of VS070_TASK_CORE cannot accidentally disable the wrong idle watchdog.
+  if (runningCore == 0) disableCore0WDT();
+#ifndef CONFIG_FREERTOS_UNICORE
+  else if (runningCore == 1) disableCore1WDT();
+#endif
+
+  const uint32_t createStarted = millis();
   OpusEncoder* encoder = opus_encoder_create(
       VS070_RATE, VS070_CHANNELS, OPUS_APPLICATION_VOIP, &error);
+  const uint32_t createMs = millis() - createStarted;
+
+  if (runningCore == 0) enableCore0WDT();
+#ifndef CONFIG_FREERTOS_UNICORE
+  else if (runningCore == 1) enableCore1WDT();
+#endif
+  // Give the just-restored idle task an immediate chance to run/feed.
+  vTaskDelay(1);
+
   if (!encoder || error != OPUS_OK) {
-    Serial.printf("OPUS TEST: encoder create FAILED error=%d %s internal_free=%u\n",
-                  error, opus_strerror(error),
-                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    Serial.printf(
+        "OPUS TEST: encoder create FAILED after %lums error=%d %s internal_free=%u\n",
+        (unsigned long)createMs, error, opus_strerror(error),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (encoder) opus_encoder_destroy(encoder);
     return false;
   }
-  Serial.printf("OPUS TEST: encoder created stack_hwm=%u internal_free=%u\n",
-                (unsigned)uxTaskGetStackHighWaterMark(nullptr),
-                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  Serial.printf(
+      "OPUS TEST: encoder created in %lums; WDT restored; stack_hwm=%u internal_free=%u\n",
+      (unsigned long)createMs,
+      (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   Serial.flush();
 
   int ctlError = OPUS_OK;
@@ -165,7 +197,7 @@ static bool vs070RunBenchmark() {
       if (static_cast<uint32_t>(bytes) < minPacket) minPacket = static_cast<uint32_t>(bytes);
       if (static_cast<uint32_t>(bytes) > maxPacket) maxPacket = static_cast<uint32_t>(bytes);
       ++completedFrames;
-      if ((f & 127) == 0) taskYIELD();
+      if ((f & 127) == 0) vTaskDelay(1);
     }
 
     const double blockEncodeMs = static_cast<double>(blockEncodeUs) / 1000.0;
@@ -180,9 +212,11 @@ static bool vs070RunBenchmark() {
         (unsigned long long)blockBytes, kbps,
         blockEncodeMs, static_cast<double>(blockGenerateUs) / 1000.0,
         realtime, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    Serial.flush();
 
     if (blockEncodeUs > static_cast<uint64_t>(VS070_BLOCK_SECONDS) * 1000000ULL) {
       Serial.println("OPUS TEST: STOP early; encoder is slower than realtime");
+      Serial.flush();
       break;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -213,8 +247,9 @@ static void vs070Worker(void*) {
   vs070TaskSuccess = vs070RunBenchmark();
   vs070TaskRunning = false;
   vs070TaskDone = true;
-  Serial.printf("OPUS TEST: worker exit success=%d stack_hwm=%u\n",
+  Serial.printf("OPUS TEST: worker exit success=%d core=%d stack_hwm=%u\n",
                 vs070TaskSuccess ? 1 : 0,
+                (int)xPortGetCoreID(),
                 (unsigned)uxTaskGetStackHighWaterMark(nullptr));
   Serial.flush();
   vTaskDelete(nullptr);
@@ -228,10 +263,12 @@ static void vs070MenuOpusTest() {
   }
 
   Serial.printf(
-      "OPUS TEST: launch from loop stack_hwm=%u; worker_stack=%uB "
+      "OPUS TEST: launch from loop core=%d stack_hwm=%u; worker_stack=%uB worker_core=%d "
       "internal_free=%u internal_largest=%u psram_free=%u\n",
+      (int)xPortGetCoreID(),
       (unsigned)uxTaskGetStackHighWaterMark(nullptr),
       (unsigned)VS070_TASK_STACK_BYTES,
+      (int)VS070_TASK_CORE,
       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
       (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -245,9 +282,9 @@ static void vs070MenuOpusTest() {
   vs070TaskRunning = true;
   vs070ProgressBlock = 0;
 
-  BaseType_t created = xTaskCreate(
+  BaseType_t created = xTaskCreatePinnedToCore(
       vs070Worker, "opus_probe", VS070_TASK_STACK_BYTES,
-      nullptr, 2, nullptr);
+      nullptr, 2, nullptr, VS070_TASK_CORE);
   if (created != pdPASS) {
     vs070TaskRunning = false;
     vs070TaskDone = true;
