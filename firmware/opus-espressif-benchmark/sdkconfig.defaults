@@ -1,7 +1,7 @@
 # Standalone benchmark only. Does not affect the production Arduino recorder.
 CONFIG_ESP_TASK_WDT_EN=n
 CONFIG_ESP_TASK_WDT_INIT=n
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=49152
 
 # Exact CoreS3-Lite CPU/flash settings.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
