@@ -142,6 +142,14 @@ static void serviceInputsV03() {
   }
   touchWasDown = touchDown;
 
+  // v0.5 reproduces this input service but calls the inherited renderer
+  // directly afterwards. Draw the four-row menu here and clear screenDirty so
+  // that old three-row drawMenu() cannot overwrite it later in the same loop.
+  if (state == AppState::MENU && screenDirty) {
+    screenDirty = false;
+    drawMenuV03();
+  }
+
   M5.update();
 }
 
