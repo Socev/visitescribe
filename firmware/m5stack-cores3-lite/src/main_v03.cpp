@@ -39,6 +39,11 @@
 
 static bool axp2101DirectOk = false;
 
+// Later sync layers may attach a synthetic upload benchmark here. Keeping this
+// as a hook means older recorder layers still compile and simply fall back to
+// normal SYNC if no test implementation is installed.
+static void (*vsSyntheticTestHook)() = nullptr;
+
 static bool readTouchV03(int& x, int& y, int& rawX, int& rawY) {
   rawX = rawY = -1;
   if (!touchOk) return false;
@@ -59,6 +64,31 @@ static void showStorageStatus() {
   refreshBattery();
   state = AppState::STATUS;
   screenDirty = true;
+}
+
+static void drawMenuV03() {
+  drawHeader("MENU");
+  // Four 50 px rows deliberately reuse the home-screen rectangles so no new
+  // touch geometry is introduced into the proven base UI.
+  zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
+  zone(HOME_ROUND, "SYNC", C_TEAL, C_WHITE, "echte opnames uploaden");
+  zone(HOME_MEETING, "SYNC TEST", C_AMBER, C_NAVY, "10 dummy chunks");
+  zone(HOME_MENU, "TERUG", C_NAVY, C_WHITE);
+}
+
+static void handleMenuTouchV03(int x, int y) {
+  if (HOME_VISIT.contains(x, y)) {
+    refreshBattery();
+    state = AppState::STATUS;
+    screenDirty = true;
+  } else if (HOME_ROUND.contains(x, y)) {
+    beginSync();
+  } else if (HOME_MEETING.contains(x, y)) {
+    if (vsSyntheticTestHook) vsSyntheticTestHook();
+    else beginSync();
+  } else if (HOME_MENU.contains(x, y)) {
+    goHome();
+  }
 }
 
 static void serviceInputsV03() {
@@ -97,6 +127,8 @@ static void serviceInputsV03() {
       // redirected to STATUS when storage is unavailable.
       if (!sdOk && state == AppState::MODE_CONFIRM && TWO_TOP.contains(tx, ty)) {
         showStorageStatus();
+      } else if (state == AppState::MENU) {
+        handleMenuTouchV03(tx, ty);
       } else {
         handleTouch(tx, ty);
       }
@@ -152,7 +184,12 @@ void VISITESCRIBE_V03_LOOP_NAME() {
     goHome();
   }
 
-  render();
+  if (state == AppState::MENU && screenDirty) {
+    screenDirty = false;
+    drawMenuV03();
+  } else {
+    render();
+  }
   serviceDisplayPower();
   delay(5);
 }
