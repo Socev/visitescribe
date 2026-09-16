@@ -6,7 +6,8 @@
 // request ever reached the API.
 //
 // This thin wrapper keeps the clock/SNTP fix, routes the production sync leaf
-// to v0.6.7, and attaches the temporary v0.6.9 synthetic transport probe.
+// to v0.6.7, attaches the temporary v0.6.9 synthetic transport probe, and can
+// optionally attach the isolated v0.7.0 Opus encoder benchmark.
 //
 // The build-time seed is not the long-term time source; SNTP is. It merely
 // prevents the first TLS handshake from running with an obviously invalid date.
@@ -72,3 +73,6 @@ void initVariant() {
 
 #include "main_v067.cpp"
 #include "main_v069_probe.cpp"
+#ifdef VISITESCRIBE_OPUS_EXPERIMENT
+#include "main_v070_opus_probe.cpp"
+#endif
