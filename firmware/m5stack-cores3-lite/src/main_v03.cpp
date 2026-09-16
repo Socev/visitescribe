@@ -21,11 +21,21 @@
 #define VISITESCRIBE_V03_LOOP_NAME_LOCAL 1
 #endif
 
+// Preserve any outer wrapper's setup/loop aliases while v0.2 is included.
+// GCC/xtensa supports push_macro/pop_macro; without this, the old plain
+// #undef setup/#undef loop sequence could erase a later firmware layer's
+// aliases and produce duplicate Arduino entrypoints.
+#pragma push_macro("setup")
+#pragma push_macro("loop")
+#undef setup
+#undef loop
 #define setup setup_v02
 #define loop loop_v02
 #include "main_v02.cpp"
 #undef setup
 #undef loop
+#pragma pop_macro("loop")
+#pragma pop_macro("setup")
 
 static bool axp2101DirectOk = false;
 
