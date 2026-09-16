@@ -5,10 +5,18 @@
 // crypto or server formats. Its only job is to prove encoder speed and output
 // size on the exact CoreS3-Lite hardware before Opus becomes a production wire
 // format.
+//
+// IMPORTANT: esp32_opus is built with USE_ALLOCA. Opus therefore needs far
+// more stack than Arduino's normal loop task provides. The upstream ESP32
+// example also runs the codec in a 32000-byte FreeRTOS task. The benchmark does
+// the same instead of calling opus_encode() from loop().
 
 #ifdef VISITESCRIBE_OPUS_EXPERIMENT
 
 #include <opus.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <esp_heap_caps.h>
 
 static constexpr int VS070_RATE = 16000;
 static constexpr int VS070_CHANNELS = 1;
@@ -19,8 +27,13 @@ static constexpr int VS070_COMPLEXITY = 1;
 static constexpr int VS070_SECONDS = 300;             // 5 minutes
 static constexpr int VS070_BLOCK_SECONDS = 30;
 static constexpr int VS070_FRAMES_PER_BLOCK = VS070_BLOCK_SECONDS * 1000 / VS070_FRAME_MS;
-static constexpr int VS070_TOTAL_FRAMES = VS070_SECONDS * 1000 / VS070_FRAME_MS;
 static constexpr int VS070_MAX_PACKET = 512;
+static constexpr uint32_t VS070_TASK_STACK_BYTES = 32000;
+
+static volatile bool vs070TaskRunning = false;
+static volatile bool vs070TaskDone = false;
+static volatile bool vs070TaskSuccess = false;
+static volatile int vs070ProgressBlock = 0;
 
 static void vs070DrawProgress(int block, int totalBlocks, const char* detail) {
   drawHeader("OPUS TEST");
@@ -43,14 +56,11 @@ static inline int16_t vs070Clamp16(int32_t v) {
 static void vs070GenerateSpeechLikeFrame(int16_t* pcm, uint32_t& phaseA,
                                          uint32_t& phaseB, uint32_t& noise,
                                          uint32_t frameIndex) {
-  // Deterministic voiced-ish signal with a slowly varying envelope plus a
-  // small unvoiced component. Content generation is timed separately from
-  // opus_encode(), so it cannot make the codec benchmark look slower.
   const uint32_t envelopeStep = (frameIndex / 25U) % 10U;
   const int32_t envelope = 5000 + static_cast<int32_t>(envelopeStep) * 900;
   for (int i = 0; i < VS070_FRAME_SAMPLES; ++i) {
-    phaseA += 5905580U;   // ~220 Hz in 32-bit phase space @ 16 kHz
-    phaseB += 9126805U;   // ~340 Hz
+    phaseA += 5905580U;
+    phaseB += 9126805U;
     int32_t sawA = static_cast<int32_t>(phaseA >> 16) - 32768;
     int32_t sawB = static_cast<int32_t>(phaseB >> 16) - 32768;
     noise ^= noise << 13;
@@ -64,23 +74,34 @@ static void vs070GenerateSpeechLikeFrame(int16_t* pcm, uint32_t& phaseA,
   }
 }
 
-static void vs070MenuOpusTest() {
-  noteActivity();
-  Serial.println("OPUS TEST: starting 5 min synthetic speech benchmark");
-  Serial.printf("OPUS TEST: config rate=%d channels=%d frame=%dms bitrate=%d complexity=%d cbr=1\n",
-                VS070_RATE, VS070_CHANNELS, VS070_FRAME_MS,
-                VS070_BITRATE, VS070_COMPLEXITY);
+static bool vs070RunBenchmark() {
+  const size_t encoderBytes = static_cast<size_t>(opus_encoder_get_size(VS070_CHANNELS));
+  Serial.printf(
+      "OPUS TEST: worker entered stack_hwm=%u encoder_state=%uB internal_free=%u "
+      "internal_largest=%u psram_free=%u\n",
+      (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+      (unsigned)encoderBytes,
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  Serial.flush();
 
   int error = OPUS_OK;
+  Serial.println("OPUS TEST: creating encoder...");
+  Serial.flush();
   OpusEncoder* encoder = opus_encoder_create(
       VS070_RATE, VS070_CHANNELS, OPUS_APPLICATION_VOIP, &error);
   if (!encoder || error != OPUS_OK) {
-    Serial.printf("OPUS TEST: encoder create FAILED error=%d %s\n",
-                  error, opus_strerror(error));
+    Serial.printf("OPUS TEST: encoder create FAILED error=%d %s internal_free=%u\n",
+                  error, opus_strerror(error),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (encoder) opus_encoder_destroy(encoder);
-    screenDirty = true;
-    return;
+    return false;
   }
+  Serial.printf("OPUS TEST: encoder created stack_hwm=%u internal_free=%u\n",
+                (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  Serial.flush();
 
   int ctlError = OPUS_OK;
   ctlError = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(VS070_BITRATE));
@@ -93,8 +114,7 @@ static void vs070MenuOpusTest() {
     Serial.printf("OPUS TEST: encoder ctl FAILED error=%d %s\n",
                   ctlError, opus_strerror(ctlError));
     opus_encoder_destroy(encoder);
-    screenDirty = true;
-    return;
+    return false;
   }
 
   static int16_t pcm[VS070_FRAME_SAMPLES];
@@ -113,10 +133,10 @@ static void vs070MenuOpusTest() {
   const uint32_t wallStarted = millis();
 
   for (int block = 0; block < totalBlocks; ++block) {
+    vs070ProgressBlock = block + 1;
     uint64_t blockBytes = 0;
     uint64_t blockEncodeUs = 0;
     uint64_t blockGenerateUs = 0;
-    vs070DrawProgress(block + 1, totalBlocks, "encoderen...");
 
     for (int f = 0; f < VS070_FRAMES_PER_BLOCK; ++f) {
       const uint32_t frameIndex = static_cast<uint32_t>(block * VS070_FRAMES_PER_BLOCK + f);
@@ -131,11 +151,11 @@ static void vs070MenuOpusTest() {
           encoder, pcm, VS070_FRAME_SAMPLES, packet, sizeof(packet));
       const uint32_t encUs = micros() - us;
       if (bytes < 0) {
-        Serial.printf("OPUS TEST: encode FAILED frame=%lu error=%d %s\n",
-                      (unsigned long)frameIndex, bytes, opus_strerror(bytes));
+        Serial.printf("OPUS TEST: encode FAILED frame=%lu error=%d %s stack_hwm=%u\n",
+                      (unsigned long)frameIndex, bytes, opus_strerror(bytes),
+                      (unsigned)uxTaskGetStackHighWaterMark(nullptr));
         opus_encoder_destroy(encoder);
-        screenDirty = true;
-        return;
+        return false;
       }
 
       blockEncodeUs += encUs;
@@ -145,7 +165,7 @@ static void vs070MenuOpusTest() {
       if (static_cast<uint32_t>(bytes) < minPacket) minPacket = static_cast<uint32_t>(bytes);
       if (static_cast<uint32_t>(bytes) > maxPacket) maxPacket = static_cast<uint32_t>(bytes);
       ++completedFrames;
-      if ((f & 127) == 0) delay(0);
+      if ((f & 127) == 0) taskYIELD();
     }
 
     const double blockEncodeMs = static_cast<double>(blockEncodeUs) / 1000.0;
@@ -155,24 +175,17 @@ static void vs070MenuOpusTest() {
                         (VS070_BLOCK_SECONDS * 1000.0);
     Serial.printf(
         "OPUS TEST: block %d/%d audio=%ds bytes=%llu kbps=%.2f "
-        "encode=%.1fms gen=%.1fms realtime=%.2fx\n",
+        "encode=%.1fms gen=%.1fms realtime=%.2fx stack_hwm=%u\n",
         block + 1, totalBlocks, VS070_BLOCK_SECONDS,
         (unsigned long long)blockBytes, kbps,
         blockEncodeMs, static_cast<double>(blockGenerateUs) / 1000.0,
-        realtime);
+        realtime, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
-    char detail[64];
-    snprintf(detail, sizeof(detail), "%.2fx  %llu bytes",
-             realtime, (unsigned long long)blockBytes);
-    vs070DrawProgress(block + 1, totalBlocks, detail);
-
-    // Do not trap the user in a multi-minute benchmark if this particular
-    // Arduino Opus build cannot keep up with realtime on the S3.
     if (blockEncodeUs > static_cast<uint64_t>(VS070_BLOCK_SECONDS) * 1000000ULL) {
       Serial.println("OPUS TEST: STOP early; encoder is slower than realtime");
       break;
     }
-    delay(10);
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 
   const uint32_t wallMs = millis() - wallStarted;
@@ -183,14 +196,86 @@ static void vs070MenuOpusTest() {
       ? (static_cast<double>(totalBytes) * 8.0) / (audioSeconds * 1000.0) : 0.0;
   Serial.printf(
       "OPUS TEST: DONE audio=%.1fs frames=%d bytes=%llu kbps=%.2f "
-      "encode=%.1fms gen=%.1fms wall=%lums realtime=%.2fx packet=%lu..%lu\n",
+      "encode=%.1fms gen=%.1fms wall=%lums realtime=%.2fx packet=%lu..%lu "
+      "stack_hwm=%u\n",
       audioSeconds, completedFrames, (unsigned long long)totalBytes, kbps,
       encodeMs, static_cast<double>(totalGenerateUs) / 1000.0,
       (unsigned long)wallMs, realtime,
       (unsigned long)(minPacket == UINT32_MAX ? 0 : minPacket),
-      (unsigned long)maxPacket);
+      (unsigned long)maxPacket,
+      (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
   opus_encoder_destroy(encoder);
+  return true;
+}
+
+static void vs070Worker(void*) {
+  vs070TaskSuccess = vs070RunBenchmark();
+  vs070TaskRunning = false;
+  vs070TaskDone = true;
+  Serial.printf("OPUS TEST: worker exit success=%d stack_hwm=%u\n",
+                vs070TaskSuccess ? 1 : 0,
+                (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+  Serial.flush();
+  vTaskDelete(nullptr);
+}
+
+static void vs070MenuOpusTest() {
+  noteActivity();
+  if (vs070TaskRunning) {
+    Serial.println("OPUS TEST: already running");
+    return;
+  }
+
+  Serial.printf(
+      "OPUS TEST: launch from loop stack_hwm=%u; worker_stack=%uB "
+      "internal_free=%u internal_largest=%u psram_free=%u\n",
+      (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+      (unsigned)VS070_TASK_STACK_BYTES,
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  Serial.printf("OPUS TEST: config rate=%d channels=%d frame=%dms bitrate=%d complexity=%d cbr=1\n",
+                VS070_RATE, VS070_CHANNELS, VS070_FRAME_MS,
+                VS070_BITRATE, VS070_COMPLEXITY);
+  Serial.flush();
+
+  vs070TaskDone = false;
+  vs070TaskSuccess = false;
+  vs070TaskRunning = true;
+  vs070ProgressBlock = 0;
+
+  BaseType_t created = xTaskCreate(
+      vs070Worker, "opus_probe", VS070_TASK_STACK_BYTES,
+      nullptr, 2, nullptr);
+  if (created != pdPASS) {
+    vs070TaskRunning = false;
+    vs070TaskDone = true;
+    Serial.printf("OPUS TEST: task create FAILED internal_free=%u internal_largest=%u\n",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    Serial.flush();
+    screenDirty = true;
+    return;
+  }
+
+  const int totalBlocks = VS070_SECONDS / VS070_BLOCK_SECONDS;
+  int lastBlock = -1;
+  while (!vs070TaskDone) {
+    const int block = vs070ProgressBlock;
+    if (block != lastBlock) {
+      lastBlock = block;
+      vs070DrawProgress(block > 0 ? block : 1, totalBlocks,
+                        block > 0 ? "codec benchmark loopt" : "encoder starten...");
+    }
+    M5.update();
+    delay(20);
+  }
+
+  vs070DrawProgress(vs070ProgressBlock > 0 ? vs070ProgressBlock : 1,
+                    totalBlocks,
+                    vs070TaskSuccess ? "klaar - zie serial" : "fout - zie serial");
+  delay(300);
   screenDirty = true;
 }
 
