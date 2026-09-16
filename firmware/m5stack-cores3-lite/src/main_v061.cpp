@@ -6,7 +6,7 @@
 // request ever reached the API.
 //
 // This thin wrapper keeps the clock/SNTP fix and now routes the sync leaf to
-// v0.6.6, which retains the same recorder stack while optimizing upload.
+// v0.6.7, which retains the same recorder stack while optimizing upload.
 //
 // The build-time seed is not the long-term time source; SNTP is. It merely
 // prevents the first TLS handshake from running with an obviously invalid date.
@@ -70,4 +70,4 @@ void initVariant() {
              "time.google.com");
 }
 
-#include "main_v066.cpp"
+#include "main_v067.cpp"
