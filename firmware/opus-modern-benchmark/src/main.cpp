@@ -2,12 +2,38 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "sdkconfig.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "opus.h"
+
+#ifndef CONFIG_SPIRAM
+#error "VisiteScribe modern Opus benchmark requires CONFIG_SPIRAM=y"
+#endif
+#ifndef CONFIG_ESP32S3_SPIRAM_SUPPORT
+#error "VisiteScribe modern Opus benchmark requires ESP32-S3 PSRAM support"
+#endif
+#ifndef CONFIG_SPIRAM_BOOT_INIT
+#error "VisiteScribe modern Opus benchmark requires CONFIG_SPIRAM_BOOT_INIT=y"
+#endif
+#ifndef CONFIG_SPIRAM_MODE_QUAD
+#error "VisiteScribe modern Opus benchmark requires Quad PSRAM"
+#endif
+#ifndef CONFIG_SPIRAM_USE_CAPS_ALLOC
+#error "VisiteScribe modern Opus benchmark requires PSRAM caps allocation"
+#endif
+#ifndef CONFIG_OPUS_THREADSAFE_PSEUDOSTACK
+#error "VisiteScribe modern Opus benchmark requires micro-opus threadsafe pseudostack"
+#endif
+#ifdef CONFIG_OPUS_FLOATING_POINT
+#error "VisiteScribe modern Opus benchmark must use fixed-point Opus"
+#endif
+#if !defined(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ) || CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ != 240
+#error "VisiteScribe modern Opus benchmark requires 240 MHz CPU"
+#endif
 
 static const char* TAG = "VS_OPUS_MODERN";
 
@@ -21,11 +47,50 @@ static constexpr int BLOCK_SECONDS = 30;
 static constexpr int BLOCKS = 10;
 static constexpr int FRAMES_PER_BLOCK = BLOCK_SECONDS * 1000 / FRAME_MS;
 static constexpr int MAX_PACKET = 512;
+static constexpr size_t MIN_EXPECTED_PSRAM = 7U * 1024U * 1024U;
+static constexpr size_t PSRAM_PROBE_BYTES = 128U * 1024U;
 
 static inline int16_t clamp16(int32_t v) {
     if (v > 32767) return 32767;
     if (v < -32768) return -32768;
     return static_cast<int16_t>(v);
+}
+
+static void stop_benchmark_forever() {
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static bool hardware_precheck() {
+    const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+    ESP_LOGI(TAG,
+             "PRECHECK build: cpu=%dMHz quad_psram=1 fixed_point=1 threadsafe_pseudostack=1",
+             CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    ESP_LOGI(TAG, "PRECHECK memory: psram_total=%u psram_free=%u expected>=7MiB",
+             (unsigned)psram_total, (unsigned)psram_free);
+
+    if (psram_total < MIN_EXPECTED_PSRAM) {
+        ESP_LOGE(TAG,
+                 "PRECHECK FAILED: expected about 8 MB Quad PSRAM, got %u bytes; benchmark will NOT run",
+                 (unsigned)psram_total);
+        return false;
+    }
+
+    void* probe = heap_caps_malloc(
+        PSRAM_PROBE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (probe == nullptr) {
+        ESP_LOGE(TAG,
+                 "PRECHECK FAILED: could not allocate %u-byte PSRAM probe; benchmark will NOT run",
+                 (unsigned)PSRAM_PROBE_BYTES);
+        return false;
+    }
+    heap_caps_free(probe);
+
+    ESP_LOGI(TAG, "PRECHECK OK: 240MHz config and Quad PSRAM are available");
+    return true;
 }
 
 static void generate_speech_like_frame(int16_t* pcm, uint32_t& phase_a,
@@ -72,6 +137,10 @@ extern "C" void app_main(void) {
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
+    if (!hardware_precheck()) {
+        stop_benchmark_forever();
+    }
+
     const int encoder_size = opus_encoder_get_size(CHANNELS);
     ESP_LOGI(TAG, "encoder_state=%d bytes", encoder_size);
 
@@ -84,7 +153,7 @@ extern "C" void app_main(void) {
     if (encoder == nullptr || error != OPUS_OK) {
         ESP_LOGE(TAG, "encoder create failed after %.3fms: %d %s",
                  create_us / 1000.0, error, opus_strerror(error));
-        return;
+        stop_benchmark_forever();
     }
 
     ESP_LOGI(TAG,
@@ -94,12 +163,12 @@ extern "C" void app_main(void) {
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
-    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE)), "bitrate")) return;
-    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(COMPLEXITY)), "complexity")) return;
-    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE)), "signal")) return;
-    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_VBR(0)), "CBR")) return;
-    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_DTX(0)), "DTX")) return;
-    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(0)), "FEC")) return;
+    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE)), "bitrate")) stop_benchmark_forever();
+    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(COMPLEXITY)), "complexity")) stop_benchmark_forever();
+    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE)), "signal")) stop_benchmark_forever();
+    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_VBR(0)), "CBR")) stop_benchmark_forever();
+    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_DTX(0)), "DTX")) stop_benchmark_forever();
+    if (!ctl_ok(encoder, opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(0)), "FEC")) stop_benchmark_forever();
 
     static int16_t pcm[FRAME_SAMPLES];
     static uint8_t packet[MAX_PACKET];
@@ -143,7 +212,7 @@ extern "C" void app_main(void) {
                 ESP_LOGE(TAG, "encode failed frame=%" PRIu32 ": %d %s",
                          frame_index, bytes, opus_strerror(bytes));
                 opus_encoder_destroy(encoder);
-                return;
+                stop_benchmark_forever();
             }
 
             block_bytes += static_cast<uint32_t>(bytes);
@@ -200,8 +269,5 @@ extern "C" void app_main(void) {
              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
     opus_encoder_destroy(encoder);
-
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    stop_benchmark_forever();
 }
