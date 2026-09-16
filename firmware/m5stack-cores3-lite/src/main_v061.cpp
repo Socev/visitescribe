@@ -5,9 +5,9 @@
 // was still near the Unix epoch, causing X509 verification to fail before the
 // request ever reached the API.
 //
-// This thin wrapper keeps the clock/SNTP fix, routes the production sync leaf
+// Keep the v0.6.1 clock/NTP fix, routes the production sync leaf
 // to v0.6.7, attaches the temporary v0.6.9 synthetic transport probe, and can
-// optionally attach the isolated v0.7.0 Opus encoder benchmark.
+// optionally attach isolated Opus experiments.
 //
 // The build-time seed is not the long-term time source; SNTP is. It merely
 // prevents the first TLS handshake from running with an obviously invalid date.
@@ -73,6 +73,13 @@ void initVariant() {
 
 #include "main_v067.cpp"
 #include "main_v069_probe.cpp"
-#ifdef VISITESCRIBE_OPUS_EXPERIMENT
+
+// The old Arduino Opus benchmark and the Espressif load probe intentionally
+// share the existing OPUS TEST menu label, but never compile into the same
+// build. Production has neither macro and therefore neither dependency.
+#if defined(VISITESCRIBE_OPUS_EXPERIMENT) && !defined(VISITESCRIBE_OPUS_ESP_LOAD_EXPERIMENT)
 #include "main_v070_opus_probe.cpp"
+#endif
+#ifdef VISITESCRIBE_OPUS_ESP_LOAD_EXPERIMENT
+#include "main_v071_opus_esp_load.cpp"
 #endif
