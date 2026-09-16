@@ -6,6 +6,8 @@ import subprocess
 
 PROJECT_DIR = Path(env.subst("$PROJECT_DIR"))
 COMPONENT_DIR = PROJECT_DIR / "components" / "micro-opus"
+SDKCONFIG_DEFAULTS = PROJECT_DIR / "sdkconfig.defaults"
+SDKCONFIG_ACTIVE = PROJECT_DIR / "sdkconfig"
 EXPECTED_SHA = "8354085908683c6130e32a832aeec8a7ca115c51"
 REPO = "https://github.com/esphome-libs/micro-opus.git"
 
@@ -23,6 +25,19 @@ def current_sha():
     except Exception:
         return ""
 
+
+# PlatformIO/pioarduino may retain or regenerate a board-derived sdkconfig even
+# when sdkconfig_defaults is supplied. This standalone benchmark must use the
+# CoreS3-Lite hardware settings exactly (240 MHz + 8 MB Quad PSRAM), so seed the
+# active sdkconfig before CMake configuration on every build. The file is local
+# build state and is intentionally gitignored.
+if not SDKCONFIG_DEFAULTS.exists():
+    raise RuntimeError(f"Missing benchmark defaults: {SDKCONFIG_DEFAULTS}")
+shutil.copyfile(SDKCONFIG_DEFAULTS, SDKCONFIG_ACTIVE)
+print(
+    f"VisiteScribe benchmark: seeded {SDKCONFIG_ACTIVE.name} "
+    f"from {SDKCONFIG_DEFAULTS.name}"
+)
 
 COMPONENT_DIR.parent.mkdir(parents=True, exist_ok=True)
 
