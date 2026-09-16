@@ -8,23 +8,32 @@ CONFIG_ESP_TASK_WDT_INIT=n
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16000
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
-# CoreS3-Lite flash geometry. The generic PlatformIO DevKitC board definition
-# is not our hardware and otherwise leaves ESP-IDF on its smaller flash choice.
+# CoreS3-Lite flash geometry. Keep this explicit because the generic PlatformIO
+# DevKitC board manifest is an 8 MB/no-PSRAM board and is not our hardware.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHMODE="qio"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHFREQ="80m"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_16mb.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions_16mb.csv"
 
-# CoreS3-Lite has 8 MB QUAD PSRAM. Do not use the upstream benchmark's Octal
-# setting; that was for a different S3 dev board and previously broke this
-# hardware when forced in the recorder build.
+# CoreS3-Lite has 8 MB QUAD PSRAM. Never force Octal/OPI on this hardware.
+# ESP-IDF 5.x needs both target support and boot initialization enabled for the
+# memory to appear in heap_caps as MALLOC_CAP_SPIRAM.
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_QUAD=y
-CONFIG_SPIRAM_USE_CAPS_ALLOC=y
-CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_HW_INIT=y
 CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_SPEED=80
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 
 # Cache settings used by the modern micro-opus benchmark where supported.
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
