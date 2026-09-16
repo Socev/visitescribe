@@ -1,0 +1,37 @@
+# Standalone benchmark only. These settings DO NOT touch the production
+# Arduino recorder project.
+
+# Benchmark runs continuously; disable task watchdog just like upstream's
+# encode benchmark so codec timing is not distorted by watchdog servicing.
+CONFIG_ESP_TASK_WDT_EN=n
+CONFIG_ESP_TASK_WDT_INIT=n
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# CoreS3-Lite has 8 MB QUAD PSRAM. Do not use the upstream benchmark's Octal
+# setting; that was for a different S3 dev board and previously broke this
+# hardware when forced in the recorder build.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Cache settings used by the modern micro-opus benchmark where supported.
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+
+# micro-opus: fixed-point is specifically recommended for SILK speech encoding
+# on ESP32-S3. Keep state and pseudostack in PSRAM first to preserve internal
+# RAM, matching the constraints of the real recorder.
+CONFIG_OPUS_FLOATING_POINT=n
+CONFIG_OPUS_THREADSAFE_PSEUDOSTACK=y
+CONFIG_OPUS_PSEUDOSTACK_SIZE=120000
+CONFIG_OPUS_STATE_PREFER_PSRAM=y
+CONFIG_OPUS_PSEUDOSTACK_PREFER_PSRAM=y
+CONFIG_OPUS_ENABLE_XTENSA_OPTIMIZATIONS=y
+CONFIG_OPUS_ENABLE_CELT_TIMING=n
+CONFIG_OPUS_ENABLE_PVQ_TIMING=n
+CONFIG_OPUS_ENABLE_QUANT_BANDS_TIMING=n
