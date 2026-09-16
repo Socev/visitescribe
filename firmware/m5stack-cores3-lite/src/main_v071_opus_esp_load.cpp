@@ -9,6 +9,13 @@
 //
 // Goal: prove that recorder + SD + UI + Espressif Opus CPU load can coexist on
 // the real production Arduino/ESP-IDF stack before any sidecar path is added.
+//
+// Safety rule for this experiment: microphone capture always outranks Opus.
+// M5Unified defaults the mic task to priority 2 and no pinned core; the first
+// version of this probe also used priority 2 on Core 0 and the SD master failed.
+// This revision explicitly pins the mic task to Core 0 at priority 4 and runs
+// Opus on the same core at priority 1, so capture preempts codec work. The load
+// probe also disables itself immediately on audioError or stalled WAV progress.
 
 #ifdef VISITESCRIBE_OPUS_ESP_LOAD_EXPERIMENT
 
@@ -27,7 +34,11 @@ static constexpr int VS071_BITRATE = 24000;
 static constexpr int VS071_COMPLEXITY = 0;
 static constexpr uint32_t VS071_TASK_STACK_BYTES = 32768;
 static constexpr BaseType_t VS071_TASK_CORE = 0;
+static constexpr UBaseType_t VS071_TASK_PRIORITY = 1;
+static constexpr BaseType_t VS071_MIC_CORE = 0;
+static constexpr uint8_t VS071_MIC_PRIORITY = 4;
 static constexpr uint32_t VS071_LOG_MS = 10000;
+static constexpr uint32_t VS071_WAV_STALL_ABORT_MS = 1000;
 
 static volatile bool vs071Enabled = false;
 static volatile bool vs071TaskRunning = false;
@@ -124,9 +135,9 @@ static void vs071Worker(void*) {
 
   Serial.printf(
       "OPUS LOAD: READY esp_audio_codec=2.5.0 rate=%d mono frame=%dms bitrate=%d complexity=%d "
-      "frame_in=%d frame_out=%d core=%d stack_hwm=%u internal_free=%u psram_free=%u\n",
+      "frame_in=%d frame_out=%d core=%d priority=%u stack_hwm=%u internal_free=%u psram_free=%u\n",
       VS071_RATE, VS071_FRAME_MS, VS071_BITRATE, VS071_COMPLEXITY,
-      inBytes, outBytes, (int)xPortGetCoreID(),
+      inBytes, outBytes, (int)xPortGetCoreID(), (unsigned)uxTaskPriorityGet(nullptr),
       (unsigned)uxTaskGetStackHighWaterMark(nullptr),
       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
       (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -144,6 +155,8 @@ static void vs071Worker(void*) {
   uint32_t nextDueUs = 0;
   uint32_t windowStartedMs = 0;
   uint32_t windowStartedWavBytes = 0;
+  uint32_t lastWavObservedBytes = 0;
+  uint32_t lastWavProgressMs = 0;
   uint64_t windowEncodeUs = 0;
   uint64_t windowGenUs = 0;
   uint32_t windowFrames = 0;
@@ -154,7 +167,7 @@ static void vs071Worker(void*) {
   for (;;) {
     if (!vs071Enabled) {
       if (wasCapturing) {
-        Serial.println("OPUS LOAD: load paused by user");
+        Serial.println("OPUS LOAD: load paused; master recorder remains active");
         Serial.flush();
       }
       wasCapturing = false;
@@ -187,6 +200,8 @@ static void vs071Worker(void*) {
       wasCapturing = true;
       windowStartedMs = millis();
       windowStartedWavBytes = wavDataBytes;
+      lastWavObservedBytes = wavDataBytes;
+      lastWavProgressMs = windowStartedMs;
       windowEncodeUs = 0;
       windowGenUs = 0;
       windowFrames = 0;
@@ -194,9 +209,34 @@ static void vs071Worker(void*) {
       windowMaxEncodeUs = 0;
       windowMissed = 0;
       nextDueUs = micros();
-      Serial.printf("OPUS LOAD: CAPTURE START session=%u wav=%s audioError=%d\n",
-                    (unsigned)sessionId, wavFinalPath, audioError ? 1 : 0);
+      Serial.printf(
+          "OPUS LOAD: CAPTURE START session=%u wav=%s audioError=%d opus_core=%d opus_prio=%u mic_core=%d mic_prio=%u\n",
+          (unsigned)sessionId, wavFinalPath, audioError ? 1 : 0,
+          (int)VS071_TASK_CORE, (unsigned)VS071_TASK_PRIORITY,
+          (int)VS071_MIC_CORE, (unsigned)VS071_MIC_PRIORITY);
       Serial.flush();
+    }
+
+    const uint32_t nowBeforeEncode = millis();
+    const uint32_t currentWavBeforeEncode = wavDataBytes;
+    if (currentWavBeforeEncode != lastWavObservedBytes) {
+      lastWavObservedBytes = currentWavBeforeEncode;
+      lastWavProgressMs = nowBeforeEncode;
+    }
+
+    if (audioError ||
+        (currentWavBeforeEncode > 0 &&
+         nowBeforeEncode - lastWavProgressMs >= VS071_WAV_STALL_ABORT_MS)) {
+      Serial.printf(
+          "OPUS LOAD: FAILSAFE ABORT reason=%s wav_bytes=%lu stalled=%lums; disabling Opus load, master capture continues\n",
+          audioError ? "audioError" : "wav_stall",
+          (unsigned long)currentWavBeforeEncode,
+          (unsigned long)(nowBeforeEncode - lastWavProgressMs));
+      Serial.flush();
+      vs071Enabled = false;
+      wasCapturing = false;
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
     }
 
     uint32_t started = micros();
@@ -275,17 +315,33 @@ static void vs071Worker(void*) {
   }
 }
 
+static void vs071PrepareMicPriority() {
+  // Called from MENU while the mic is stopped. startCapture() later retrieves
+  // this config and only changes sample rate/channel/oversampling/noise, so the
+  // task priority/core settings survive into M5.Mic.begin().
+  auto micCfg = M5.Mic.config();
+  micCfg.task_priority = VS071_MIC_PRIORITY;
+  micCfg.task_pinned_core = VS071_MIC_CORE;
+  M5.Mic.config(micCfg);
+  Serial.printf("OPUS LOAD: recorder protection mic_core=%d mic_priority=%u; opus_core=%d opus_priority=%u\n",
+                (int)VS071_MIC_CORE, (unsigned)VS071_MIC_PRIORITY,
+                (int)VS071_TASK_CORE, (unsigned)VS071_TASK_PRIORITY);
+  Serial.flush();
+}
+
 static void vs071MenuToggleLoad() {
   noteActivity();
   if (!vs071TaskRunning && !vs071TaskReady) {
+    vs071PrepareMicPriority();
     vs071Enabled = true;
     Serial.printf(
-        "OPUS LOAD: starting background task stack=%uB core=%d; master WAV path unchanged\n",
-        (unsigned)VS071_TASK_STACK_BYTES, (int)VS071_TASK_CORE);
+        "OPUS LOAD: starting background task stack=%uB core=%d priority=%u; master WAV path unchanged\n",
+        (unsigned)VS071_TASK_STACK_BYTES, (int)VS071_TASK_CORE,
+        (unsigned)VS071_TASK_PRIORITY);
     Serial.flush();
     BaseType_t created = xTaskCreatePinnedToCore(
         vs071Worker, "opus_esp_load", VS071_TASK_STACK_BYTES,
-        nullptr, 2, &vs071TaskHandle, VS071_TASK_CORE);
+        nullptr, VS071_TASK_PRIORITY, &vs071TaskHandle, VS071_TASK_CORE);
     if (created != pdPASS) {
       vs071Enabled = false;
       vs071TaskRunning = false;
@@ -296,6 +352,7 @@ static void vs071MenuToggleLoad() {
       Serial.flush();
     }
   } else if (vs071CodecOk) {
+    if (!vs071Enabled) vs071PrepareMicPriority();
     vs071Enabled = !vs071Enabled;
     Serial.printf("OPUS LOAD: %s; total_frames=%lu missed_total=%lu\n",
                   vs071Enabled ? "ENABLED" : "PAUSED",
