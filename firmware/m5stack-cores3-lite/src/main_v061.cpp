@@ -5,8 +5,8 @@
 // was still near the Unix epoch, causing X509 verification to fail before the
 // request ever reached the API.
 //
-// This thin wrapper keeps the clock/SNTP fix and now routes the sync leaf to
-// v0.6.7, which retains the same recorder stack while optimizing upload.
+// This thin wrapper keeps the clock/SNTP fix and routes the sync leaf to
+// v0.6.7, then attaches the temporary v0.6.8 synthetic upload benchmark menu.
 //
 // The build-time seed is not the long-term time source; SNTP is. It merely
 // prevents the first TLS handshake from running with an obviously invalid date.
@@ -71,3 +71,4 @@ void initVariant() {
 }
 
 #include "main_v067.cpp"
+#include "main_v068_test.cpp"
