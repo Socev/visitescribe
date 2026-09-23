@@ -52,9 +52,15 @@
 #error "VISITESCRIBE_SERVER_CA_PEM must be supplied by main_v062.cpp or server_secrets.h"
 #endif
 
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+static constexpr uint32_t VS_SPEECH_RATE = 12000;
+static constexpr uint16_t VS_SPEECH_CHANNELS = 1;
+static constexpr uint16_t VS_SPEECH_BITS = 8;
+#else
 static constexpr uint32_t VS_SPEECH_RATE = 16000;
 static constexpr uint16_t VS_SPEECH_CHANNELS = 1;
 static constexpr uint16_t VS_SPEECH_BITS = 16;
+#endif
 static constexpr uint32_t VS_SYNC_CHUNK_SECONDS = 30;
 static constexpr uint32_t VS_LEGACY_CHUNK_SECONDS = 10;
 static constexpr size_t VS_GCM_TAG_BYTES = 16;
@@ -64,6 +70,71 @@ static constexpr uint32_t VS_HTTP_TIMEOUT_MS = 60000;
 // 6144 int16 samples = 12 KiB. For the current 48 kHz stereo source this is
 // exactly 1024 output samples per read (3 source frames x 2 channels each).
 static int16_t vsSourceScratch[6144];
+
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+struct __attribute__((packed)) VsMulawWavHeader {
+  char riff[4] = {'R','I','F','F'};
+  uint32_t riffSize = 50;
+  char wave[4] = {'W','A','V','E'};
+  char fmt[4] = {'f','m','t',' '};
+  uint32_t fmtSize = 18;
+  uint16_t audioFormat = 7;  // WAVE_FORMAT_MULAW
+  uint16_t numChannels = 1;
+  uint32_t sampleRate = VS_SPEECH_RATE;
+  uint32_t byteRate = VS_SPEECH_RATE;
+  uint16_t blockAlign = 1;
+  uint16_t bitsPerSample = 8;
+  uint16_t cbSize = 0;
+  char fact[4] = {'f','a','c','t'};
+  uint32_t factSize = 4;
+  uint32_t sampleLength = 0;
+  char data[4] = {'d','a','t','a'};
+  uint32_t dataSize = 0;
+};
+static_assert(sizeof(VsMulawWavHeader) == 58, "mu-law WAV header size must stay canonical");
+
+static uint8_t vsLinearToMulaw(int16_t sample) {
+  static constexpr int16_t BIAS = 0x84;
+  static constexpr int16_t CLIP = 32635;
+  int32_t pcm = sample;
+  uint8_t mask;
+  if (pcm < 0) {
+    pcm = BIAS - pcm;
+    mask = 0x7F;
+  } else {
+    pcm += BIAS;
+    mask = 0xFF;
+  }
+  if (pcm > CLIP) pcm = CLIP;
+
+  int segment = 0;
+  int32_t value = pcm >> 7;
+  while (value > 1 && segment < 7) {
+    value >>= 1;
+    ++segment;
+  }
+  const uint8_t mantissa = static_cast<uint8_t>((pcm >> (segment + 3)) & 0x0F);
+  return static_cast<uint8_t>((segment << 4) | mantissa) ^ mask;
+}
+
+static bool vsDemoMulawUuid(const String& localUuid, String& out) {
+  if (!vsEnsureDeviceRootKey()) return false;
+  uint8_t digest[32];
+  if (!vsHmacSha256(vsDeviceRootKey, sizeof(vsDeviceRootKey),
+                    String("sync:v4-mulaw:") + localUuid, digest)) return false;
+  digest[6] = (digest[6] & 0x0F) | 0x40;
+  digest[8] = (digest[8] & 0x3F) | 0x80;
+  char uuid[37];
+  snprintf(uuid, sizeof(uuid),
+           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+           digest[0], digest[1], digest[2], digest[3],
+           digest[4], digest[5], digest[6], digest[7],
+           digest[8], digest[9], digest[10], digest[11],
+           digest[12], digest[13], digest[14], digest[15]);
+  out = String(uuid);
+  return true;
+}
+#endif
 
 struct VsLocalSession {
   String prefix;
@@ -434,8 +505,16 @@ static bool vsChunkNonceFlavor(const uint8_t sessionKey[32], const String& uuid,
                                uint32_t sequence, bool legacy,
                                uint8_t nonce[VS_GCM_NONCE_BYTES]) {
   uint8_t full[32];
-  String msg = legacy ? String("nonce:") + uuid + ":" + String(sequence)
-                      : String("nonce:v3-speech:") + uuid + ":" + String(sequence);
+  String msg;
+  if (legacy) {
+    msg = String("nonce:") + uuid + ":" + String(sequence);
+  } else {
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+    msg = String("nonce:v4-mulaw:") + uuid + ":" + String(sequence);
+#else
+    msg = String("nonce:v3-speech:") + uuid + ":" + String(sequence);
+#endif
+  }
   if (!vsHmacSha256(sessionKey, 32, msg, full)) return false;
   memcpy(nonce, full, VS_GCM_NONCE_BYTES);
   return true;
@@ -446,8 +525,15 @@ static bool vsFillCryptoMeta(const uint8_t sessionKey[32], const String& uuid,
   uint8_t nonce[VS_GCM_NONCE_BYTES];
   if (!vsChunkNonceFlavor(sessionKey, uuid, sequence, legacy, nonce)) return false;
   meta.sequence = sequence;
-  meta.aad = legacy ? String("visitescribe-v2:") + uuid + ":" + String(sequence)
-                    : String("visitescribe-v3-speech:") + uuid + ":" + String(sequence);
+  if (legacy) {
+    meta.aad = String("visitescribe-v2:") + uuid + ":" + String(sequence);
+  } else {
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+    meta.aad = String("visitescribe-v4-mulaw:") + uuid + ":" + String(sequence);
+#else
+    meta.aad = String("visitescribe-v3-speech:") + uuid + ":" + String(sequence);
+#endif
+  }
   meta.nonceB64 = vsBase64(nonce, sizeof(nonce));
   return meta.nonceB64.length() > 0;
 }
@@ -507,11 +593,18 @@ static bool vsDescribeSpeechChunk(const WAVHeader& h, uint32_t sourceBytes,
   uint32_t ratio = 0, groupBytes = 0;
   if (!vsSpeechSourceShape(h, ratio, groupBytes) || sourceBytes == 0) return false;
   const uint32_t outputSamples = sourceBytes / groupBytes;
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+  const uint32_t outputDataBytes = outputSamples;
+  const size_t headerBytes = sizeof(VsMulawWavHeader);
+#else
   const uint32_t outputDataBytes = outputSamples * sizeof(int16_t);
+  const size_t headerBytes = sizeof(WAVHeader);
+#endif
   if (!vsFillCryptoMeta(sessionKey, uuid, sequence, false, meta)) return false;
-  meta.plaintextBytes = sizeof(WAVHeader) + outputDataBytes;
+  meta.plaintextBytes = headerBytes + outputDataBytes;
   meta.ciphertextBytes = meta.plaintextBytes + VS_GCM_TAG_BYTES;
-  meta.durationMs = static_cast<uint32_t>((static_cast<uint64_t>(outputSamples) * 1000ULL) / VS_SPEECH_RATE);
+  meta.durationMs = static_cast<uint32_t>(
+      (static_cast<uint64_t>(outputSamples) * 1000ULL) / VS_SPEECH_RATE);
   return true;
 }
 
@@ -524,10 +617,28 @@ static bool vsPrepareSpeechChunk(File& wav, const WAVHeader& sourceHeader,
   const uint32_t sourceBytes = vsSpeechSourceBytes(sourceHeader, remaining);
   if (sourceBytes == 0) return false;
   const uint32_t outputSamples = sourceBytes / groupBytes;
+
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+  const uint32_t outputDataBytes = outputSamples;
+  const size_t plainLen = sizeof(VsMulawWavHeader) + outputDataBytes;
+#else
   const uint32_t outputDataBytes = outputSamples * sizeof(int16_t);
   const size_t plainLen = sizeof(WAVHeader) + outputDataBytes;
+#endif
   if (!vsEnsureChunkBuffers(plainLen)) return false;
 
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+  VsMulawWavHeader outHeader;
+  outHeader.riffSize = static_cast<uint32_t>(plainLen - 8);
+  outHeader.sampleRate = VS_SPEECH_RATE;
+  outHeader.byteRate = VS_SPEECH_RATE * VS_SPEECH_CHANNELS;
+  outHeader.numChannels = VS_SPEECH_CHANNELS;
+  outHeader.blockAlign = VS_SPEECH_CHANNELS;
+  outHeader.sampleLength = outputSamples;
+  outHeader.dataSize = outputDataBytes;
+  memcpy(vsPlain, &outHeader, sizeof(outHeader));
+  uint8_t* dst = vsPlain + sizeof(VsMulawWavHeader);
+#else
   WAVHeader outHeader = sourceHeader;
   outHeader.audioFormat = 1;
   outHeader.numChannels = VS_SPEECH_CHANNELS;
@@ -538,10 +649,13 @@ static bool vsPrepareSpeechChunk(File& wav, const WAVHeader& sourceHeader,
   outHeader.dataSize = outputDataBytes;
   outHeader.fileSize = 36 + outputDataBytes;
   memcpy(vsPlain, &outHeader, sizeof(outHeader));
-
   int16_t* dst = reinterpret_cast<int16_t*>(vsPlain + sizeof(WAVHeader));
-  const size_t samplesPerOutput = static_cast<size_t>(sourceHeader.numChannels) * ratio;
-  const size_t scratchSamples = sizeof(vsSourceScratch) / sizeof(vsSourceScratch[0]);
+#endif
+
+  const size_t samplesPerOutput =
+      static_cast<size_t>(sourceHeader.numChannels) * ratio;
+  const size_t scratchSamples =
+      sizeof(vsSourceScratch) / sizeof(vsSourceScratch[0]);
   const size_t maxOutputPerRead = scratchSamples / samplesPerOutput;
   if (maxOutputPerRead == 0) return false;
 
@@ -551,20 +665,32 @@ static bool vsPrepareSpeechChunk(File& wav, const WAVHeader& sourceHeader,
     if (groups > maxOutputPerRead) groups = maxOutputPerRead;
     const size_t sourceSamples = groups * samplesPerOutput;
     const size_t readBytes = sourceSamples * sizeof(int16_t);
-    if (!vsReadExact(wav, reinterpret_cast<uint8_t*>(vsSourceScratch), readBytes)) return false;
+    if (!vsReadExact(wav, reinterpret_cast<uint8_t*>(vsSourceScratch), readBytes)) {
+      return false;
+    }
 
     for (size_t g = 0; g < groups; ++g) {
       int32_t sum = 0;
       const size_t base = g * samplesPerOutput;
-      for (size_t s = 0; s < samplesPerOutput; ++s) sum += vsSourceScratch[base + s];
-      dst[produced + g] = static_cast<int16_t>(sum / static_cast<int32_t>(samplesPerOutput));
+      for (size_t s = 0; s < samplesPerOutput; ++s) {
+        sum += vsSourceScratch[base + s];
+      }
+      const int16_t mono =
+          static_cast<int16_t>(sum / static_cast<int32_t>(samplesPerOutput));
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+      dst[produced + g] = vsLinearToMulaw(mono);
+#else
+      dst[produced + g] = mono;
+#endif
     }
     produced += groups;
   }
 
   remaining -= sourceBytes;
-  if (!vsEncryptPreparedChunk(sessionKey, uuid, sequence, plainLen, false, meta)) return false;
-  meta.durationMs = static_cast<uint32_t>((static_cast<uint64_t>(outputSamples) * 1000ULL) / VS_SPEECH_RATE);
+  if (!vsEncryptPreparedChunk(
+          sessionKey, uuid, sequence, plainLen, false, meta)) return false;
+  meta.durationMs = static_cast<uint32_t>(
+      (static_cast<uint64_t>(outputSamples) * 1000ULL) / VS_SPEECH_RATE);
   return true;
 }
 
@@ -797,7 +923,11 @@ static bool vsWriteSpeechManifest(const VsLocalSession& session,
       "{\"schema_version\":2,\"session_id\":\"%s\",\"device_id\":\"%s\","
       "\"mode\":\"%s\",\"status\":\"complete\","
       "\"audio\":{\"codec\":\"wav\",\"sample_rate\":%lu,\"channels\":%u,"
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+      "\"sample_format\":\"ULAW\",\"chunk_seconds\":%lu},"
+#else
       "\"sample_format\":\"S16_LE\",\"chunk_seconds\":%lu},"
+#endif
       "\"encryption\":{\"algorithm\":\"AES-256-GCM\",\"local_key_wrap\":null,"
       "\"server_key_wrap\":{\"algorithm\":\"RSA-OAEP-SHA256\",\"key_id\":\"%s\","
       "\"ciphertext_b64\":\"%s\"}},\"chunks\":[",
@@ -854,8 +984,13 @@ static bool vsWriteSpeechManifest(const VsLocalSession& session,
   manifest.print("]}");
   manifest.flush();
   manifest.close();
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+  Serial.printf("SERVER: speech manifest chunks=%lu built=%lums format=12k-mono-mulaw/30s v4\n",
+                (unsigned long)chunkCount, (unsigned long)(millis() - started));
+#else
   Serial.printf("SERVER: speech manifest chunks=%lu built=%lums format=16k-mono/30s\n",
                 (unsigned long)chunkCount, (unsigned long)(millis() - started));
+#endif
   return chunkCount > 0;
 }
 
