@@ -95,6 +95,13 @@ static bool vs067PrepareSpeechChunk(File& wav, const WAVHeader& sourceHeader,
                                     uint32_t& remaining, const uint8_t sessionKey[32],
                                     const String& uuid, uint32_t sequence,
                                     VsChunkMeta& meta, Vs067PrepTiming& timing) {
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+  const uint32_t started = millis();
+  const bool ok = vsPrepareSpeechChunk(
+      wav, sourceHeader, remaining, sessionKey, uuid, sequence, meta);
+  timing.mixMs += millis() - started;
+  return ok;
+#else
   if (!vs067EnsureScratch()) return false;
 
   uint32_t ratio = 0, groupBytes = 0;
@@ -165,6 +172,7 @@ static bool vs067PrepareSpeechChunk(File& wav, const WAVHeader& sourceHeader,
       (static_cast<uint64_t>(outputSamples) * 1000ULL) / VS_SPEECH_RATE);
   return true;
 }
+#endif
 
 static bool vs067PrepareLegacyChunk(File& wav, const WAVHeader& h, uint32_t& remaining,
                                     const uint8_t sessionKey[32], const String& uuid,
@@ -505,6 +513,16 @@ static bool vs067SyncAllPending() {
     if (!vsLoadLocalSession(prefix, local)) {
       return vsFail(String("Lokale sessie fout: ") + prefix);
     }
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+    const String localUuid = local.uuid;
+    String uploadUuid;
+    if (!vsDemoMulawUuid(localUuid, uploadUuid)) {
+      return vsFail(String("v4 sync UUID maken mislukt: ") + prefix);
+    }
+    local.uuid = uploadUuid;
+    Serial.printf("SERVER: demo v4 session %s local_uuid=%s upload_uuid=%s\n",
+                  prefix.c_str(), localUuid.c_str(), local.uuid.c_str());
+#endif
     if (!vs067SyncOne(local, serverKeyId, serverPublicPem)) return false;
   }
   vsSetStage(VsServerStage::DONE,
@@ -550,7 +568,11 @@ void setup() {
   if (!vs067EnsureScratch()) {
     Serial.println("SERVER: WARNING v0.6.7 large-read scratch unavailable");
   }
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+  Serial.println("VisiteScribe DEMO sync: 12kHz mono G.711 mu-law / 30s / crypto v4");
+#else
   Serial.println("VisiteScribe CoreS3-Lite v0.6.7; SD=512KiB reads; HTTP/TLS=persistent; timing=split");
+#endif
 }
 
 void loop() {
