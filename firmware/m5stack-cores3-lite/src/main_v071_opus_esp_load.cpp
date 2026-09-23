@@ -101,6 +101,7 @@ static void vs071Worker(void*) {
     Serial.flush();
     vs071CodecOk = false;
     vs071TaskReady = true;
+    screenDirty = true;
     vs071TaskRunning = false;
     vTaskDelete(nullptr);
     return;
@@ -146,6 +147,7 @@ static void vs071Worker(void*) {
 
   vs071CodecOk = true;
   vs071TaskReady = true;
+  screenDirty = true;
 
   uint32_t phaseA = 0;
   uint32_t phaseB = 0x12345678U;
@@ -234,6 +236,7 @@ static void vs071Worker(void*) {
           (unsigned long)(nowBeforeEncode - lastWavProgressMs));
       Serial.flush();
       vs071Enabled = false;
+      screenDirty = true;
       wasCapturing = false;
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
@@ -329,6 +332,15 @@ static void vs071PrepareMicPriority() {
   Serial.flush();
 }
 
+
+static const char* vs071MenuStatus() {
+  if (!vs071TaskRunning && !vs071TaskReady) return "tik om te starten";
+  if (vs071TaskRunning && !vs071TaskReady) return "STARTEN...";
+  if (!vs071CodecOk) return "FOUT - reboot";
+  if (vs071Enabled) return "AAN - start een VISITE";
+  return "UIT - tik om aan te zetten";
+}
+
 static void vs071MenuToggleLoad() {
   noteActivity();
   if (!vs071TaskRunning && !vs071TaskReady) {
@@ -371,6 +383,7 @@ struct Vs071InstallHook {
     // The menu hook itself runs only after Arduino setup and user interaction.
     // Global construction merely installs the function pointer.
     vsSyntheticTestHook = vs071MenuToggleLoad;
+    vsSyntheticTestStatusHook = vs071MenuStatus;
   }
 };
 static Vs071InstallHook vs071InstallHook;
