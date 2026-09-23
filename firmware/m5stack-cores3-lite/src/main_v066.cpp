@@ -117,23 +117,6 @@ static uint8_t vsLinearToMulaw(int16_t sample) {
   return static_cast<uint8_t>((segment << 4) | mantissa) ^ mask;
 }
 
-static bool vsDemoMulawUuid(const String& localUuid, String& out) {
-  if (!vsEnsureDeviceRootKey()) return false;
-  uint8_t digest[32];
-  if (!vsHmacSha256(vsDeviceRootKey, sizeof(vsDeviceRootKey),
-                    String("sync:v4-mulaw:") + localUuid, digest)) return false;
-  digest[6] = (digest[6] & 0x0F) | 0x40;
-  digest[8] = (digest[8] & 0x3F) | 0x80;
-  char uuid[37];
-  snprintf(uuid, sizeof(uuid),
-           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-           digest[0], digest[1], digest[2], digest[3],
-           digest[4], digest[5], digest[6], digest[7],
-           digest[8], digest[9], digest[10], digest[11],
-           digest[12], digest[13], digest[14], digest[15]);
-  out = String(uuid);
-  return true;
-}
 #endif
 
 struct VsLocalSession {
@@ -500,6 +483,27 @@ static bool vsSessionKey(const String& uuid, uint8_t out[32]) {
   if (!vsEnsureDeviceRootKey()) return false;
   return vsHmacSha256(vsDeviceRootKey, sizeof(vsDeviceRootKey), String("session:") + uuid, out);
 }
+
+#ifdef VISITESCRIBE_DEMO_MULAW_SYNC
+static bool vsDemoMulawUuid(const String& localUuid, String& out) {
+  if (!vsEnsureDeviceRootKey()) return false;
+  uint8_t digest[32];
+  if (!vsHmacSha256(vsDeviceRootKey, sizeof(vsDeviceRootKey),
+                    String("sync:v4-mulaw:") + localUuid, digest)) return false;
+  digest[6] = (digest[6] & 0x0F) | 0x40;
+  digest[8] = (digest[8] & 0x3F) | 0x80;
+  char uuid[37];
+  snprintf(uuid, sizeof(uuid),
+           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+           digest[0], digest[1], digest[2], digest[3],
+           digest[4], digest[5], digest[6], digest[7],
+           digest[8], digest[9], digest[10], digest[11],
+           digest[12], digest[13], digest[14], digest[15]);
+  out = String(uuid);
+  return true;
+}
+
+#endif
 
 static bool vsChunkNonceFlavor(const uint8_t sessionKey[32], const String& uuid,
                                uint32_t sequence, bool legacy,
