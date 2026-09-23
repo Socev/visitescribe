@@ -69,6 +69,11 @@ static void showStorageStatus() {
 
 static void drawMenuV03() {
   drawHeader("MENU");
+#ifdef VISITESCRIBE_DEMO_UI
+  zone(THREE_TOP, "STATUS", C_BLUE, C_WHITE);
+  zone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "opnames naar server");
+  zone(THREE_BOTTOM, "TERUG", C_NAVY, C_WHITE);
+#else
   // Four 50 px rows deliberately reuse the home-screen rectangles so no new
   // touch geometry is introduced into the proven base UI.
   zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
@@ -80,9 +85,21 @@ static void drawMenuV03() {
   zone(HOME_MEETING, "SYNC TEST", C_AMBER, C_NAVY, "10 dummy chunks");
 #endif
   zone(HOME_MENU, "TERUG", C_NAVY, C_WHITE);
+#endif
 }
 
 static void handleMenuTouchV03(int x, int y) {
+#ifdef VISITESCRIBE_DEMO_UI
+  if (THREE_TOP.contains(x, y)) {
+    refreshBattery();
+    state = AppState::STATUS;
+    screenDirty = true;
+  } else if (THREE_MIDDLE.contains(x, y)) {
+    beginSync();
+  } else if (THREE_BOTTOM.contains(x, y)) {
+    goHome();
+  }
+#else
   if (HOME_VISIT.contains(x, y)) {
     refreshBattery();
     state = AppState::STATUS;
@@ -95,6 +112,7 @@ static void handleMenuTouchV03(int x, int y) {
   } else if (HOME_MENU.contains(x, y)) {
     goHome();
   }
+#endif
 }
 
 static void serviceInputsV03() {
