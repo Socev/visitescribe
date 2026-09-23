@@ -43,6 +43,7 @@ static bool axp2101DirectOk = false;
 // as a hook means older recorder layers still compile and simply fall back to
 // normal SYNC if no test implementation is installed.
 static void (*vsSyntheticTestHook)() = nullptr;
+static const char* (*vsSyntheticTestStatusHook)() = nullptr;
 
 static bool readTouchV03(int& x, int& y, int& rawX, int& rawY) {
   rawX = rawY = -1;
@@ -73,7 +74,8 @@ static void drawMenuV03() {
   zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
   zone(HOME_ROUND, "SYNC", C_TEAL, C_WHITE, "echte opnames uploaden");
 #ifdef VISITESCRIBE_OPUS_EXPERIMENT
-  zone(HOME_MEETING, "OPUS TEST", C_AMBER, C_NAVY, "5 min encoder benchmark");
+  const char* opusStatus = vsSyntheticTestStatusHook ? vsSyntheticTestStatusHook() : "tik om te starten";
+  zone(HOME_MEETING, "OPUS TEST", C_AMBER, C_NAVY, opusStatus);
 #else
   zone(HOME_MEETING, "SYNC TEST", C_AMBER, C_NAVY, "10 dummy chunks");
 #endif
