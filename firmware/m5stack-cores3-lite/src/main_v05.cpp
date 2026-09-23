@@ -204,7 +204,19 @@ void VISITESCRIBE_V05_LOOP_NAME() {
     goHome();
   }
 
-  render();
+  // MENU has a four-row renderer introduced in v0.3. Never call the legacy
+  // render() while MENU is active: asynchronous workers (such as the Opus
+  // load probe) can set screenDirty between input handling and this point,
+  // which otherwise lets the inherited three-row drawMenu() overwrite the
+  // STATUS / SYNC / OPUS TEST / TERUG layout.
+  if (state == AppState::MENU) {
+    if (screenDirty) {
+      screenDirty = false;
+      drawMenuV03();
+    }
+  } else {
+    render();
+  }
   serviceDisplayPower();
   delay(5);
 }
