@@ -1268,7 +1268,16 @@ class SyncApp:
 
                 device.read_file(s.events, events_local, event_progress)
                 key = device.session_key(s.uuid)
-                api.sync(s, local_wavs, events_local, key)
+                try:
+                    api.sync(s, local_wavs, events_local, key)
+                except ExistingSessionNeedsV3 as exc:
+                    self.log(str(exc))
+                    self.post(
+                        "status",
+                        f"{s.prefix} overgeslagen",
+                        "Bestaande v3-sessie: eenmalig via M5 Wi-Fi afmaken.",
+                    )
+                    continue
                 device.mark_ingested(s.prefix, s.uuid)
 
             self.log(f"{s.prefix}: lokaal op M5 gemarkeerd als ingested")
