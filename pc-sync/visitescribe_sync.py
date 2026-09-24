@@ -84,18 +84,19 @@ class VisiteScribeUsb:
 
     @staticmethod
     def _open_port(port: str) -> serial.Serial:
-        ser = serial.Serial(
-            port,
-            USB_BAUD,
-            timeout=0.35,
-            write_timeout=10,
-            inter_byte_timeout=1,
-        )
-        try:
-            ser.dtr = False
-            ser.rts = False
-        except Exception:
-            pass
+        # Configure DTR/RTS before opening the ESP32-S3 USB CDC port.  Opening
+        # first and clearing the lines afterwards can create a short control-
+        # line pulse; on native USB devices that may cause a disconnect /
+        # re-enumeration exactly while discovery is sending HELLO.
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = USB_BAUD
+        ser.timeout = 0.35
+        ser.write_timeout = 10
+        ser.inter_byte_timeout = 1
+        ser.dtr = False
+        ser.rts = False
+        ser.open()
         return ser
 
     @classmethod
@@ -109,23 +110,43 @@ class VisiteScribeUsb:
             ser = None
             try:
                 ser = cls._open_port(p.device)
-                time.sleep(0.2)
-                ser.reset_input_buffer()
+
+                # Native USB CDC can need a little time after the host opens the
+                # handle.  Do not hammer the port immediately.
+                time.sleep(0.75)
+                try:
+                    ser.reset_input_buffer()
+                except serial.SerialException:
+                    # Device may have re-enumerated once.  Let the next scan
+                    # reopen the fresh COM handle instead of treating this as a
+                    # permanent failure.
+                    raise
+
                 dev = cls(ser)
-                for _ in range(3):
-                    dev._write_line("VSUSB HELLO")
-                    line = dev._wait_protocol_line("VSUSB READY", timeout=0.8)
+                for attempt in range(5):
+                    try:
+                        dev._write_line("VSUSB HELLO")
+                    except serial.SerialException:
+                        raise
+                    line = dev._wait_protocol_line("VSUSB READY", timeout=1.2)
                     if line:
                         parts = line.split()
                         if len(parts) >= 3 and int(parts[2]) == USB_PROTOCOL:
-                            log(f"VisiteScribe gevonden op {p.device}")
+                            log(
+                                f"VisiteScribe gevonden op {p.device} "
+                                f"({p.description or 'USB serial'})"
+                            )
                             return dev
-                    time.sleep(0.2)
-                log(f"{p.device}: COM-poort bereikbaar, maar geen VisiteScribe-handshake.")
-            except serial.SerialException as exc:
+                    time.sleep(0.35)
+
                 log(
-                    f"{p.device}: kan COM-poort niet openen ({exc}). "
-                    "Sluit PlatformIO Serial Monitor of andere programma's die deze poort gebruiken."
+                    f"{p.device}: poort opent wel maar geen VSUSB READY. "
+                    f"Beschrijving={p.description!r}, VID={p.vid}, PID={p.pid}"
+                )
+            except (serial.SerialException, OSError) as exc:
+                log(
+                    f"{p.device}: USB-poort tijdelijk niet beschikbaar ({exc}). "
+                    "Als de Serial Monitor dicht is, wacht de app op re-enumeratie en probeert opnieuw."
                 )
             except Exception as exc:
                 log(f"{p.device}: detectiefout: {type(exc).__name__}: {exc}")
