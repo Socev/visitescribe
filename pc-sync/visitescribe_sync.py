@@ -581,6 +581,258 @@ def fill_manifest_crypto(manifest: dict, session_key: bytes, uuid: str) -> None:
         item["aad"] = f"visitescribe-v3-speech:{uuid}:{sequence}"
 
 
+_FFMPEG_EXE: str | None = None
+
+
+def ffmpeg_exe() -> str:
+    global _FFMPEG_EXE
+    if _FFMPEG_EXE:
+        return _FFMPEG_EXE
+
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        try:
+            import imageio_ffmpeg  # type: ignore
+            exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception as exc:
+            raise RuntimeError(
+                "ffmpeg ontbreekt. Installeer requirements.txt opnieuw."
+            ) from exc
+
+    probe = subprocess.run(
+        [exe, "-hide_banner", "-h", "encoder=libopus"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if probe.returncode != 0 or "libopus" not in probe.stdout.lower():
+        raise RuntimeError("de gevonden ffmpeg bevat geen libopus encoder")
+
+    _FFMPEG_EXE = exe
+    return exe
+
+
+def api_error_code(response: requests.Response) -> str | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    error = body.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        return str(code) if code else None
+    return None
+
+
+def v4_nonce_and_aad(session_key: bytes, uuid: str, sequence: int) -> tuple[bytes, str]:
+    nonce = hmac.new(
+        session_key,
+        f"nonce:v4-opus:{uuid}:{sequence}".encode("ascii"),
+        hashlib.sha256,
+    ).digest()[:12]
+    aad = f"visitescribe-v4-opus:{uuid}:{sequence}"
+    return nonce, aad
+
+
+def encode_opus_plaintext(chunk: Chunk) -> bytes:
+    pcm_wav = canonical_wav_16k_mono(chunk)
+    exe = ffmpeg_exe()
+
+    with tempfile.TemporaryDirectory(prefix="visitescribe-opus-") as td:
+        root = Path(td)
+        in_wav = root / "chunk.wav"
+        out_opus = root / "chunk.opus"
+        in_wav.write_bytes(pcm_wav)
+
+        cmd = [
+            exe,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", str(in_wav),
+            "-ac", "1",
+            "-ar", str(SPEECH_RATE),
+            "-c:a", "libopus",
+            "-b:a", "24k",
+            "-vbr", "on",
+            "-compression_level", "10",
+            "-application", "voip",
+            "-frame_duration", str(OPUS_FRAME_MS),
+            "-map_metadata", "-1",
+            "-fflags", "+bitexact",
+            "-flags:a", "+bitexact",
+            "-f", "ogg",
+            str(out_opus),
+        ]
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if proc.returncode != 0 or not out_opus.exists():
+            detail = (proc.stderr or proc.stdout or "onbekende ffmpeg fout").strip()
+            raise RuntimeError(f"ffmpeg Opus encode mislukt: {detail}")
+
+        data = out_opus.read_bytes()
+        if not data.startswith(b"OggS") or b"OpusHead" not in data[:512]:
+            raise RuntimeError("ffmpeg leverde geen geldig Ogg/Opus-bestand")
+        return data
+
+
+def _manifest_chunk_to_prepared(root: Path, item: dict) -> OpusPreparedChunk:
+    sequence = int(item["sequence"])
+    path = root / f"chunk-{sequence:06d}.opus.enc"
+    return OpusPreparedChunk(
+        sequence=sequence,
+        path=path,
+        nonce_b64=str(item["nonce_b64"]),
+        aad=str(item["aad"]),
+        plaintext_sha256=str(item["plaintext_sha256"]),
+        ciphertext_sha256=str(item["ciphertext_sha256"]),
+        plaintext_size=int(item["plaintext_size"]),
+        ciphertext_size=int(item["ciphertext_size"]),
+        start_offset_ms=int(item.get("start_offset_ms", 0)),
+        duration_ms=int(item.get("duration_ms", 0)),
+    )
+
+
+def load_v4_spool(uuid: str) -> tuple[dict, list[OpusPreparedChunk]] | None:
+    root = SPOOL_ROOT / uuid
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        return None
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("session_id") != uuid:
+            return None
+        audio = manifest.get("audio") or {}
+        if audio.get("codec") != "opus" or audio.get("container") != "ogg":
+            return None
+
+        prepared = [
+            _manifest_chunk_to_prepared(root, item)
+            for item in manifest.get("chunks", [])
+        ]
+        if not prepared:
+            return None
+
+        for item in prepared:
+            if not item.path.exists() or item.path.stat().st_size != item.ciphertext_size:
+                return None
+            if hashlib.sha256(item.path.read_bytes()).hexdigest() != item.ciphertext_sha256:
+                return None
+        return manifest, prepared
+    except Exception:
+        return None
+
+
+def build_v4_spool(
+    session: UsbSession,
+    info: DeviceInfo,
+    chunks: list[Chunk],
+    session_key: bytes,
+    server_key_id: str,
+    server_public_pem: bytes,
+    log: Callable[[str], None],
+    progress: Callable[[float, str], None],
+) -> tuple[dict, list[OpusPreparedChunk]]:
+    existing = load_v4_spool(session.uuid)
+    if existing:
+        log(f"{session.prefix}: bestaande v4 spool hergebruikt")
+        return existing
+
+    root = SPOOL_ROOT / session.uuid
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    wrapped = wrap_session_key(session_key, server_public_pem)
+    prepared: list[OpusPreparedChunk] = []
+    manifest_chunks: list[dict] = []
+
+    for index, chunk in enumerate(chunks, 1):
+        progress(
+            (index - 1) / len(chunks),
+            f"{session.prefix}: Opus {index}/{len(chunks)} encoderen",
+        )
+        opus_plain = encode_opus_plaintext(chunk)
+        nonce, aad = v4_nonce_and_aad(session_key, session.uuid, chunk.sequence)
+        ciphertext = AESGCM(session_key).encrypt(nonce, opus_plain, aad.encode("ascii"))
+
+        out_path = root / f"chunk-{chunk.sequence:06d}.opus.enc"
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp_path.write_bytes(ciphertext)
+        tmp_path.replace(out_path)
+
+        plaintext_sha = hashlib.sha256(opus_plain).hexdigest()
+        ciphertext_sha = hashlib.sha256(ciphertext).hexdigest()
+        item = {
+            "sequence": chunk.sequence,
+            "file": f"audio/chunk-{chunk.sequence:06d}.opus.enc",
+            "nonce_b64": base64.b64encode(nonce).decode("ascii"),
+            "aad": aad,
+            "plaintext_sha256": plaintext_sha,
+            "ciphertext_sha256": ciphertext_sha,
+            "plaintext_size": len(opus_plain),
+            "ciphertext_size": len(ciphertext),
+            "start_offset_ms": chunk.start_offset_ms,
+            "duration_ms": chunk.duration_ms,
+        }
+        manifest_chunks.append(item)
+        prepared.append(_manifest_chunk_to_prepared(root, item))
+
+    manifest = {
+        "schema_version": 2,
+        "session_id": session.uuid,
+        "device_id": info.device_id,
+        "mode": session.mode,
+        "status": "complete",
+        "audio": {
+            "codec": "opus",
+            "container": "ogg",
+            "sample_rate": SPEECH_RATE,
+            "channels": 1,
+            "sample_format": "opus",
+            "chunk_seconds": SYNC_CHUNK_SECONDS,
+            "bitrate": OPUS_BITRATE,
+            "frame_ms": OPUS_FRAME_MS,
+        },
+        "encryption": {
+            "algorithm": "AES-256-GCM",
+            "local_key_wrap": None,
+            "server_key_wrap": {
+                "algorithm": "RSA-OAEP-SHA256",
+                "key_id": server_key_id,
+                "ciphertext_b64": wrapped,
+            },
+        },
+        "chunks": manifest_chunks,
+    }
+
+    manifest_tmp = root / "manifest.json.tmp"
+    manifest_tmp.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    manifest_tmp.replace(root / "manifest.json")
+    total = sum(item.ciphertext_size for item in prepared)
+    log(
+        f"{session.prefix}: v4 Opus klaar, {len(prepared)} chunks, "
+        f"{total / 1024 / 1024:.2f} MB encrypted wire-data"
+    )
+    return manifest, prepared
+
+
+def delete_v4_spool(uuid: str) -> None:
+    root = SPOOL_ROOT / uuid
+    if root.exists():
+        shutil.rmtree(root)
+
+
 def parse_events(path: Path) -> list[dict]:
     result: list[dict] = []
     with path.open("r", encoding="utf-8", newline="") as f:
