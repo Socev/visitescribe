@@ -7,7 +7,9 @@ import hmac
 import io
 import json
 import queue
+import shutil
 import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -34,6 +36,9 @@ USB_PROTOCOL = 1
 USB_READ_BYTES = 256 * 1024
 SPEECH_RATE = 16000
 SYNC_CHUNK_SECONDS = 30
+OPUS_BITRATE = 24000
+OPUS_FRAME_MS = 20
+SPOOL_ROOT = Path(__file__).resolve().parent / "spool"
 CONFIRMED_STATES = {
     "INGESTED", "READY_FOR_PROCESSING", "TRANSCRIBING",
     "PROCESSING", "REVIEW_REQUIRED", "APPROVED",
