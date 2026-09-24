@@ -7,8 +7,11 @@ M5 CoreS3-Lite -> USB -> PC -> bestaande VisiteScribe API
 ```
 
 De 48 kHz stereo WAV-master blijft altijd op de microSD staan. De PC-app leest
-alleen complete, nog niet als ingested gemarkeerde sessies. Voor de huidige API
-maakt de PC dezelfde 16 kHz mono PCM16 / 30 s chunks als firmware v0.6.7.
+alleen complete, nog niet als ingested gemarkeerde sessies.
+
+Sinds API 1.6 gebruikt de PC-route voor **nieuwe** sessies v4 Ogg/Opus:
+16 kHz mono, 24 kbit/s VBR, 20 ms VOIP frames en zelfstandige chunks van
+maximaal 30 s. De M5/Wi-Fi-route blijft bewust op het bewezen v3 PCM-pad.
 
 ## Installatie
 
@@ -42,8 +45,10 @@ Daarna:
 
 - de M5 levert device-id, API-token en per-sessie session key via USB;
 - de PC downloadt WAV + events vanaf SD;
-- de PC converteert 48 kHz stereo -> 16 kHz mono PCM16;
-- de PC versleutelt identiek aan de bestaande firmware;
+- de PC converteert 48 kHz stereo -> 16 kHz mono;
+- nieuwe server-sessies worden met ffmpeg/libopus naar Ogg/Opus v4 geencodeerd;
+- de PC gebruikt het aparte v4 nonce/AAD-domein en AES-256-GCM;
+- encrypted Opus chunks blijven in `pc-sync/spool/<uuid>` staan tot bevestiging;
 - de PC uploadt via de bestaande API;
 - pas na server-confirmatie stuurt de PC `MARK` terug;
 - de originele WAV-bestanden worden nooit verwijderd.
@@ -90,3 +95,17 @@ de binaire USB-stream niet vervuilen.
 - Geen installer/EXE; voor deze MVP bewust Python.
 - Geen nieuw gecomprimeerd wire-format. Zodra het API-contract daarvoor bekend
   is, kan de PC-codeclaag worden vervangen zonder het USB-protocol te wijzigen.
+
+
+## v4 / v3 sessiekeuze
+
+De PC vraagt eerst de serverstatus op.
+
+- onbekende session UUID -> nieuwe v4 Ogg/Opus sessie;
+- reeds bevestigde sessie -> lokaal alleen als ingested markeren;
+- bestaande onvoltooide sessie met een lokale v4 spool -> v4 resume;
+- bestaande onvoltooide sessie zonder v4 spool -> niet van codec wisselen;
+  deze oude v3 sessie wordt overgeslagen en moet eenmalig via de M5 Wi-Fi-route
+  worden afgemaakt.
+
+Dit voorkomt dat dezelfde session UUID ooit van PCM naar Opus wisselt.
