@@ -107,9 +107,17 @@ static void startWifiAttemptV05(uint8_t startIndex) {
   }
 
   syncNetwork = static_cast<uint8_t>(index);
-  WiFi.disconnect(true, true);
-  delay(20);
-  WiFi.mode(WIFI_STA);
+
+  // Keep the station radio alive while switching profiles. Power-cycling Wi-Fi
+  // for every failed SSID made phone hotspots unnecessarily fragile: the next
+  // WPA authentication could start while the radio/driver was still settling.
+  if ((WiFi.getMode() & WIFI_MODE_STA) == 0) {
+    WiFi.mode(WIFI_STA);
+    delay(150);
+  } else {
+    WiFi.disconnect(false, false);
+    delay(150);
+  }
   WiFi.setAutoReconnect(false);
   WiFi.persistent(false);
   WiFi.begin(wifiSsidV05(syncNetwork), wifiPasswordV05(syncNetwork));
