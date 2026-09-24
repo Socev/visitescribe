@@ -18,6 +18,7 @@
 
 static constexpr size_t VS067_SCRATCH_BYTES = 512U * 1024U;
 static uint8_t* vs067Scratch = nullptr;
+static bool vs067EnsureScratch();
 
 static bool vsUsbSyncActive = false;
 static String vsUsbRxLine;
