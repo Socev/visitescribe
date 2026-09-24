@@ -202,15 +202,21 @@ class VisiteScribeUsb:
             raise RuntimeError(f"geen antwoord op {command}")
         return line
 
-    def enter(self) -> bool:
+    def enter(self) -> DeviceInfo | None:
         self._write_line("VSUSB ENTER")
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             line = self._readline(1)
-            if line == "VSUSB OK ENTER":
-                return True
+            if line.startswith("VSUSB OK ENTER"):
+                parts = line.split(" ", 5)
+                if len(parts) == 6:
+                    token = base64.b64decode(parts[5]).decode("utf-8") if parts[5] else ""
+                    return DeviceInfo(parts[3], parts[4], token)
+                # Backward compatibility with the first USB firmware build:
+                # ENTER succeeded but identity still has to be queried.
+                return self.info()
             if line == "VSUSB BUSY RECORDING":
-                return False
+                return None
             if line.startswith("VSUSB ERROR"):
                 raise RuntimeError(line)
         raise RuntimeError("M5 antwoordt niet op ENTER")
@@ -793,16 +799,17 @@ class SyncApp:
 
             self.post("status", "VisiteScribe gevonden", device.port)
 
+            info: DeviceInfo | None = None
             while not self.stop.is_set():
-                if device.enter():
+                info = device.enter()
+                if info is not None:
                     break
                 self.post("status", "Recorder is bezig", "Wachten tot de opname is gestopt...")
                 time.sleep(2.0)
 
-            if self.stop.is_set():
+            if self.stop.is_set() or info is None:
                 return
 
-            info = device.info()
             self.log(f"Device: {info.device_id}")
             self.log(f"Server: {info.base_url}")
 
