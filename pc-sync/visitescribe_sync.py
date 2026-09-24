@@ -786,105 +786,152 @@ class SyncApp:
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
 
-    def _run(self) -> None:
-        device: VisiteScribeUsb | None = None
-        try:
-            while not self.stop.is_set() and device is None:
-                device = VisiteScribeUsb.discover(self.log)
-                if device is None:
-                    self.post("status", "Zoeken naar VisiteScribe...", "Geen M5 gevonden")
-                    time.sleep(1.0)
-            if not device or self.stop.is_set():
+    @staticmethod
+    def _port_present(port: str) -> bool:
+        return any(p.device == port for p in list_ports.comports())
+
+    def _wait_for_disconnect(self, port: str) -> None:
+        self.post(
+            "status",
+            "Alles gesynchroniseerd",
+            "U kunt VisiteScribe loskoppelen; de app wacht automatisch op de volgende aansluiting.",
+        )
+        while not self.stop.is_set() and self._port_present(port):
+            time.sleep(0.5)
+
+        if not self.stop.is_set():
+            self.post("progress", 0.0, "")
+            self.post(
+                "status",
+                "Wachten op VisiteScribe...",
+                "Sluit de M5 aan; synchronisatie start automatisch.",
+            )
+
+    def _sync_connected_device(self, device: VisiteScribeUsb) -> None:
+        self.post("status", "VisiteScribe gevonden", device.port)
+
+        info: DeviceInfo | None = None
+        while not self.stop.is_set():
+            info = device.enter()
+            if info is not None:
+                break
+            self.post(
+                "status",
+                "Recorder is bezig",
+                "Wachten tot de opname is gestopt...",
+            )
+            time.sleep(2.0)
+
+        if self.stop.is_set() or info is None:
+            return
+
+        self.log(f"Device: {info.device_id}")
+        self.log(f"Server: {info.base_url}")
+
+        sessions = device.list_sessions()
+        if not sessions:
+            self.log("Geen openstaande sessies.")
+            self.post("progress", 1.0, "Geen openstaande sessies")
+            return
+
+        self.log(f"{len(sessions)} sessie(s) te synchroniseren")
+        api = ApiSync(info, self.log, self.set_progress)
+
+        for index, s in enumerate(sessions, 1):
+            if self.stop.is_set():
                 return
+            self.post(
+                "status",
+                f"Synchroniseren {index}/{len(sessions)}",
+                f"{s.prefix} via USB → PC → server",
+            )
 
-            self.post("status", "VisiteScribe gevonden", device.port)
-
-            info: DeviceInfo | None = None
-            while not self.stop.is_set():
-                info = device.enter()
-                if info is not None:
-                    break
-                self.post("status", "Recorder is bezig", "Wachten tot de opname is gestopt...")
-                time.sleep(2.0)
-
-            if self.stop.is_set() or info is None:
-                return
-
-            self.log(f"Device: {info.device_id}")
-            self.log(f"Server: {info.base_url}")
-
-            sessions = device.list_sessions()
-            if not sessions:
-                self.post("status", "Alles is gesynchroniseerd", "Geen openstaande sessies.")
-                return
-
-            self.log(f"{len(sessions)} sessie(s) te synchroniseren")
-            api = ApiSync(info, self.log, self.set_progress)
-
-            for index, s in enumerate(sessions, 1):
-                if self.stop.is_set():
-                    return
-                self.post(
-                    "status",
-                    f"Synchroniseren {index}/{len(sessions)}",
-                    f"{s.prefix} via USB → PC → server",
+            with tempfile.TemporaryDirectory(prefix=f"visitescribe-{s.prefix}-") as td:
+                temp = Path(td)
+                total_download = (s.events.size if s.events else 0) + sum(
+                    w.size for w in s.wavs
                 )
+                downloaded_before = 0
 
-                with tempfile.TemporaryDirectory(prefix=f"visitescribe-{s.prefix}-") as td:
-                    temp = Path(td)
-                    total_download = (s.events.size if s.events else 0) + sum(
-                        w.size for w in s.wavs
-                    )
-                    downloaded_before = 0
+                local_wavs: list[Path] = []
+                for wi, remote_wav in enumerate(s.wavs):
+                    local = temp / f"audio-{wi:03d}.wav"
 
-                    local_wavs: list[Path] = []
-                    for wi, remote_wav in enumerate(s.wavs):
-                        local = temp / f"audio-{wi:03d}.wav"
-
-                        def wav_progress(done: int, total: int, base=downloaded_before):
-                            fraction = (base + done) / total_download if total_download else 1.0
-                            self.set_progress(
-                                fraction,
-                                f"{s.prefix}: audio van M5 {100*fraction:.0f}%",
-                            )
-
-                        device.read_file(remote_wav, local, wav_progress)
-                        downloaded_before += remote_wav.size
-                        local_wavs.append(local)
-
-                    if s.events is None:
-                        raise RuntimeError(f"{s.prefix}: eventsbestand ontbreekt")
-                    events_local = temp / "events.csv"
-
-                    def event_progress(done: int, total: int, base=downloaded_before):
+                    def wav_progress(done: int, total: int, base=downloaded_before):
                         fraction = (base + done) / total_download if total_download else 1.0
                         self.set_progress(
                             fraction,
-                            f"{s.prefix}: bestanden van M5 {100*fraction:.0f}%",
+                            f"{s.prefix}: audio van M5 {100*fraction:.0f}%",
                         )
 
-                    device.read_file(s.events, events_local, event_progress)
-                    key = device.session_key(s.uuid)
-                    api.sync(s, local_wavs, events_local, key)
-                    device.mark_ingested(s.prefix, s.uuid)
+                    device.read_file(remote_wav, local, wav_progress)
+                    downloaded_before += remote_wav.size
+                    local_wavs.append(local)
 
-                self.log(f"{s.prefix}: lokaal op M5 gemarkeerd als ingested")
+                if s.events is None:
+                    raise RuntimeError(f"{s.prefix}: eventsbestand ontbreekt")
+                events_local = temp / "events.csv"
 
-            self.post("progress", 1.0, "Synchronisatie voltooid")
-            self.post(
-                "status",
-                "Alles gesynchroniseerd",
-                "De originele WAV-bestanden blijven op de SD-kaart staan.",
-            )
-        except Exception as exc:
-            self.log(f"FOUT: {type(exc).__name__}: {exc}")
-            self.post("status", "Sync fout", str(exc))
-        finally:
-            if device:
-                try:
-                    device.exit()
-                finally:
+                def event_progress(done: int, total: int, base=downloaded_before):
+                    fraction = (base + done) / total_download if total_download else 1.0
+                    self.set_progress(
+                        fraction,
+                        f"{s.prefix}: bestanden van M5 {100*fraction:.0f}%",
+                    )
+
+                device.read_file(s.events, events_local, event_progress)
+                key = device.session_key(s.uuid)
+                api.sync(s, local_wavs, events_local, key)
+                device.mark_ingested(s.prefix, s.uuid)
+
+            self.log(f"{s.prefix}: lokaal op M5 gemarkeerd als ingested")
+
+        self.post("progress", 1.0, "Synchronisatie voltooid")
+
+    def _run(self) -> None:
+        # Permanent watcher: once started, never require a manual 'search'
+        # action again.  A successful sync returns to device-arrival waiting.
+        while not self.stop.is_set():
+            device: VisiteScribeUsb | None = None
+            port: str | None = None
+            try:
+                while not self.stop.is_set() and device is None:
+                    device = VisiteScribeUsb.discover(self.log)
+                    if device is None:
+                        self.post(
+                            "status",
+                            "Wachten op VisiteScribe...",
+                            "Sluit de M5 aan; synchronisatie start automatisch.",
+                        )
+                        time.sleep(1.0)
+
+                if not device or self.stop.is_set():
+                    return
+
+                port = device.port
+                self._sync_connected_device(device)
+
+            except Exception as exc:
+                self.log(f"FOUT: {type(exc).__name__}: {exc}")
+                self.post("status", "Sync fout", f"{exc} — nieuwe poging volgt automatisch")
+            finally:
+                if device:
+                    try:
+                        device.exit()
+                    except Exception:
+                        pass
                     device.close()
+
+            if self.stop.is_set():
+                return
+
+            # After a normal run, wait for the physical USB disconnect before
+            # arming discovery again.  Otherwise the still-connected M5 would
+            # immediately be rediscovered in a tight no-op sync loop.
+            if port and self._port_present(port):
+                self._wait_for_disconnect(port)
+            else:
+                time.sleep(1.0)
 
     def _drain_queue(self) -> None:
         try:
