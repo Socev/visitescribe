@@ -106,6 +106,7 @@ static String vsServerSessionPrefix;
 static uint32_t vsServerChunkCurrent = 0;
 static uint32_t vsServerChunkTotal = 0;
 static uint32_t vsServerSessionsDone = 0;
+static uint32_t vsServerSessionsSkipped = 0;
 static uint32_t vsServerSessionsTotal = 0;
 static uint32_t vsServerLastDrawMs = 0;
 static bool vsServerSyncRunning = false;
@@ -157,7 +158,8 @@ static void vsDrawServerSync(bool force = false) {
     centeredText(128, p, C_BLUE, 2);
   } else if (vsServerSessionsTotal) {
     char p[48];
-    snprintf(p, sizeof(p), "SESSIES %lu / %lu", (unsigned long)vsServerSessionsDone, (unsigned long)vsServerSessionsTotal);
+    const uint32_t handled = vsServerSessionsDone + vsServerSessionsSkipped;
+    snprintf(p, sizeof(p), "SESSIES %lu / %lu", (unsigned long)handled, (unsigned long)vsServerSessionsTotal);
     centeredText(128, p, C_BLUE, 1);
   }
   if (vsServerStage == VsServerStage::ERROR) {
@@ -856,7 +858,8 @@ static bool vsWriteSpeechManifest(const VsLocalSession& session,
   manifest.close();
   Serial.printf("SERVER: speech manifest chunks=%lu built=%lums format=16k-mono/30s\n",
                 (unsigned long)chunkCount, (unsigned long)(millis() - started));
-  return chunkCount > 0;
+  if (chunkCount == 0) return vsFail("Geen geldige audiochunks in lokale sessie");
+  return true;
 }
 
 static VsManifestPost vsPostManifest(const VsLocalSession& session, const String& manifestPath) {
