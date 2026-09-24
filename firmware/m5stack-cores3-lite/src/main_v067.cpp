@@ -585,8 +585,8 @@ void loop() {
   // v0.6.7 sync engine here.
   loop_v05();
   vs067ServiceServerSync();
-  if (state == AppState::SYNC &&
-      (syncPhase == SyncPhase::CONNECTED || vsServerStage != VsServerStage::IDLE)) {
-    vsDrawServerSync(false);
-  }
+
+  // Server-sync screens are redrawn explicitly on real state/progress changes.
+  // Do not repaint the complete screen continuously here; that caused visible
+  // flicker during long uploads without adding any information.
 }
