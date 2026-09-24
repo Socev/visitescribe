@@ -83,6 +83,24 @@ class Chunk:
     ciphertext_size: int
 
 
+@dataclass
+class OpusPreparedChunk:
+    sequence: int
+    path: Path
+    nonce_b64: str
+    aad: str
+    plaintext_sha256: str
+    ciphertext_sha256: str
+    plaintext_size: int
+    ciphertext_size: int
+    start_offset_ms: int
+    duration_ms: int
+
+
+class ExistingSessionNeedsV3(RuntimeError):
+    pass
+
+
 class VisiteScribeUsb:
     def __init__(self, ser: serial.Serial):
         self.ser = ser
