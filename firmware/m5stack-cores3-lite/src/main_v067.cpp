@@ -171,8 +171,8 @@ static bool vs067PrepareSpeechChunk(File& wav, const WAVHeader& sourceHeader,
   meta.durationMs = static_cast<uint32_t>(
       (static_cast<uint64_t>(outputSamples) * 1000ULL) / VS_SPEECH_RATE);
   return true;
-}
 #endif
+}
 
 static bool vs067PrepareLegacyChunk(File& wav, const WAVHeader& h, uint32_t& remaining,
                                     const uint8_t sessionKey[32], const String& uuid,
