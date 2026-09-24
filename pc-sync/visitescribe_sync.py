@@ -129,12 +129,12 @@ class VisiteScribeUsb:
                 )
             except Exception as exc:
                 log(f"{p.device}: detectiefout: {type(exc).__name__}: {exc}")
-            finally:
-                if ser:
-                    try:
-                        ser.close()
-                    except Exception:
-                        pass
+
+            if ser:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
         return None
 
     @property
