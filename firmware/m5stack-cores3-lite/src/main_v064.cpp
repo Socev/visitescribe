@@ -217,6 +217,10 @@ static void vs064DumpPrepareFailure() {
 }
 
 void serialEventRun() {
+  // During an active PC sync the USB serial stream carries framed binary file
+  // data. Suppress all legacy debug output until the PC sends VSUSB EXIT.
+  if (vsUsbSyncActive) return;
+
   static bool bannerPrinted = false;
   static bool prepareFailureDumped = false;
 
