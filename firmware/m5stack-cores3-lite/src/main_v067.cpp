@@ -492,6 +492,7 @@ static bool vs067SyncAllPending() {
   const auto prefixes = vsPendingPrefixes();
   vsServerSessionsTotal = prefixes.size();
   vsServerSessionsDone = 0;
+  vsServerSessionsSkipped = 0;
   if (prefixes.empty()) {
     vsSetStage(VsServerStage::NOTHING, "Alle opnames zijn gesynchroniseerd");
     return true;
@@ -501,14 +502,39 @@ static bool vs067SyncAllPending() {
   if (!vsFetchServerKey(serverKeyId, serverPublicPem)) return false;
   for (const auto& prefix : prefixes) {
     if (WiFi.status() != WL_CONNECTED) return vsFail("WiFi verbinding verloren");
+
     VsLocalSession local;
     if (!vsLoadLocalSession(prefix, local)) {
       return vsFail(String("Lokale sessie fout: ") + prefix);
     }
+
+    // A damaged/empty local recording must never block later consultations.
+    // Keep every local file and sync marker untouched so it remains available
+    // for manual recovery, but skip it for this automatic queue.
+    const uint32_t localSpeechChunks = vsCountChunks(local, false);
+    if (localSpeechChunks == 0) {
+      ++vsServerSessionsSkipped;
+      vsServerSessionPrefix = local.prefix;
+      vsServerChunkCurrent = vsServerChunkTotal = 0;
+      Serial.printf(
+          "SERVER: SKIP session %s: no valid 16k speech chunks; local files retained\n",
+          local.prefix.c_str());
+      vsSetStage(VsServerStage::PREPARE, "OVERGESLAGEN - lokale audio ongeldig");
+      continue;
+    }
+
     if (!vs067SyncOne(local, serverKeyId, serverPublicPem)) return false;
   }
-  vsSetStage(VsServerStage::DONE,
-             String(vsServerSessionsDone) + " sessie(s) geupload");
+
+  if (vsServerSessionsSkipped) {
+    vsSetStage(
+        VsServerStage::DONE,
+        String(vsServerSessionsDone) + " upload, " +
+        String(vsServerSessionsSkipped) + " overgeslagen");
+  } else {
+    vsSetStage(VsServerStage::DONE,
+               String(vsServerSessionsDone) + " sessie(s) geupload");
+  }
   return true;
 }
 
