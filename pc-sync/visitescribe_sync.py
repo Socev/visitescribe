@@ -100,7 +100,12 @@ class VisiteScribeUsb:
 
     @classmethod
     def discover(cls, log: Callable[[str], None]) -> "VisiteScribeUsb | None":
-        for p in list_ports.comports():
+        ports = list(list_ports.comports())
+        if not ports:
+            log("Geen COM-poorten gevonden.")
+            return None
+
+        for p in ports:
             ser = None
             try:
                 ser = cls._open_port(p.device)
@@ -116,13 +121,20 @@ class VisiteScribeUsb:
                             log(f"VisiteScribe gevonden op {p.device}")
                             return dev
                     time.sleep(0.2)
-            except Exception:
-                pass
-            if ser:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
+                log(f"{p.device}: COM-poort bereikbaar, maar geen VisiteScribe-handshake.")
+            except serial.SerialException as exc:
+                log(
+                    f"{p.device}: kan COM-poort niet openen ({exc}). "
+                    "Sluit PlatformIO Serial Monitor of andere programma's die deze poort gebruiken."
+                )
+            except Exception as exc:
+                log(f"{p.device}: detectiefout: {type(exc).__name__}: {exc}")
+            finally:
+                if ser:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
         return None
 
     @property
