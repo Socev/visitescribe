@@ -47,7 +47,7 @@ static constexpr uint8_t BRIGHTNESS_DIM = 24;
 static constexpr uint32_t DISPLAY_DIM_MS = 12000;
 static constexpr uint32_t DISPLAY_OFF_MS = 60000;
 static constexpr uint32_t FINISHED_AUTO_HOME_MS = 8000;
-static constexpr uint32_t WIFI_ATTEMPT_MS = 6500;
+static constexpr uint32_t WIFI_ATTEMPT_MS = 15000;
 
 static constexpr uint16_t C_BG      = 0xE71C;
 static constexpr uint16_t C_WHITE   = 0xFFFF;
