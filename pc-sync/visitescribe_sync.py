@@ -830,7 +830,7 @@ class SyncApp:
 
                 self.log(f"{s.prefix}: lokaal op M5 gemarkeerd als ingested")
 
-            self.progress["value"] = 100
+            self.post("progress", 1.0, "Synchronisatie voltooid")
             self.post(
                 "status",
                 "Alles gesynchroniseerd",
