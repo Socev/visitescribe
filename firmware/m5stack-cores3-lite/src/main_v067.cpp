@@ -19,6 +19,232 @@
 static constexpr size_t VS067_SCRATCH_BYTES = 512U * 1024U;
 static uint8_t* vs067Scratch = nullptr;
 
+static bool vsUsbSyncActive = false;
+static String vsUsbRxLine;
+
+static bool vsUsbSafePath(const String& path) {
+  return path.startsWith("/visitescribe/") &&
+         path.indexOf("..") < 0 &&
+         path.length() < 180;
+}
+
+static void vsUsbDraw(const char* status, const char* sub = nullptr) {
+  drawHeader("USB SYNC", sub);
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
+  centeredText(105, status, C_BLUE, 2);
+  centeredText(145, "PC beheert sync - SD blijft lokaal", C_GREY, 1);
+}
+
+static void vsUsbReplyInfo() {
+  const String tokenB64 = vsBase64(
+      reinterpret_cast<const uint8_t*>(VISITESCRIBE_DEVICE_TOKEN),
+      strlen(VISITESCRIBE_DEVICE_TOKEN));
+  Serial.printf("VSUSB INFO %s %s %s\n",
+                VISITESCRIBE_DEVICE_ID,
+                VISITESCRIBE_SERVER_BASE_URL,
+                tokenB64.c_str());
+}
+
+static void vsUsbReplyList() {
+  const auto prefixes = vsPendingPrefixes();
+  uint32_t listed = 0;
+  for (const auto& prefix : prefixes) {
+    VsLocalSession local;
+    if (!vsLoadLocalSession(prefix, local)) continue;
+
+    const uint32_t chunks = vsCountChunks(local, false);
+    if (chunks == 0) {
+      Serial.printf("VSUSB SKIP %s NO_AUDIO\n", prefix.c_str());
+      continue;
+    }
+
+    File events = SD.open(local.eventsPath, FILE_READ);
+    const size_t eventsSize = events ? events.size() : 0;
+    if (events) events.close();
+
+    Serial.printf("VSUSB SESSION %s %s %s %u %u\n",
+                  local.prefix.c_str(), local.uuid.c_str(), local.mode.c_str(),
+                  (unsigned)local.wavs.size(), (unsigned)eventsSize);
+    Serial.printf("VSUSB EVENTS %u %s\n",
+                  (unsigned)eventsSize, local.eventsPath.c_str());
+    for (const auto& path : local.wavs) {
+      File wav = SD.open(path, FILE_READ);
+      const size_t size = wav ? wav.size() : 0;
+      if (wav) wav.close();
+      Serial.printf("VSUSB WAV %u %s\n", (unsigned)size, path.c_str());
+    }
+    Serial.println("VSUSB ENDSESSION");
+    ++listed;
+  }
+  Serial.printf("VSUSB ENDLIST %lu\n", (unsigned long)listed);
+}
+
+static void vsUsbReplySessionKey(const String& uuid) {
+  uint8_t key[32];
+  if (!vsSessionKey(uuid, key)) {
+    Serial.println("VSUSB ERROR KEY");
+    return;
+  }
+  const String b64 = vsBase64(key, sizeof(key));
+  memset(key, 0, sizeof(key));
+  Serial.printf("VSUSB KEY %s %s\n", uuid.c_str(), b64.c_str());
+}
+
+static void vsUsbReadFile(const String& path, uint32_t offset, uint32_t wanted) {
+  static constexpr uint32_t MAX_READ = 256U * 1024U;
+  if (!vsUsbSafePath(path) || wanted == 0 || wanted > MAX_READ) {
+    Serial.println("VSUSB ERROR READ_ARGS");
+    return;
+  }
+
+  File f = SD.open(path, FILE_READ);
+  if (!f) {
+    Serial.println("VSUSB ERROR READ_OPEN");
+    return;
+  }
+  const uint32_t fileSize = static_cast<uint32_t>(f.size());
+  if (offset > fileSize || !f.seek(offset)) {
+    f.close();
+    Serial.println("VSUSB ERROR READ_SEEK");
+    return;
+  }
+
+  uint32_t sendBytes = wanted;
+  if (sendBytes > fileSize - offset) sendBytes = fileSize - offset;
+  if (!vs067EnsureScratch()) {
+    f.close();
+    Serial.println("VSUSB ERROR READ_BUFFER");
+    return;
+  }
+
+  Serial.printf("VSUSB DATA %lu\n", (unsigned long)sendBytes);
+  Serial.flush();
+
+  uint32_t sent = 0;
+  while (sent < sendBytes) {
+    size_t n = sendBytes - sent;
+    if (n > 64U * 1024U) n = 64U * 1024U;
+    const size_t got = f.read(vs067Scratch, n);
+    if (got == 0) break;
+    Serial.write(vs067Scratch, got);
+    sent += got;
+  }
+  f.close();
+  Serial.flush();
+  Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+  Serial.flush();
+}
+
+static void vsUsbHandleCommand(String line) {
+  line.trim();
+  if (!line.startsWith("VSUSB ")) return;
+
+  if (line == "VSUSB HELLO") {
+    Serial.println("VSUSB READY 1");
+    return;
+  }
+
+  if (line == "VSUSB ENTER") {
+    if (captureRunning || state == AppState::RECORDING || state == AppState::PAUSED) {
+      Serial.println("VSUSB BUSY RECORDING");
+      return;
+    }
+    vsUsbSyncActive = true;
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_OFF);
+    vsUsbDraw("PC VERBONDEN", "USB protocol v1");
+    Serial.println("VSUSB OK ENTER");
+    return;
+  }
+
+  if (!vsUsbSyncActive) {
+    Serial.println("VSUSB ERROR NOT_ENTERED");
+    return;
+  }
+
+  if (line == "VSUSB INFO") {
+    vsUsbReplyInfo();
+    return;
+  }
+  if (line == "VSUSB LIST") {
+    vsUsbReplyList();
+    return;
+  }
+  if (line == "VSUSB EXIT") {
+    Serial.println("VSUSB OK EXIT");
+    Serial.flush();
+    vsUsbSyncActive = false;
+    goHome();
+    return;
+  }
+
+  if (line.startsWith("VSUSB KEY ")) {
+    String uuid = line.substring(strlen("VSUSB KEY "));
+    uuid.trim();
+    if (uuid.length() != 36) {
+      Serial.println("VSUSB ERROR KEY_ARGS");
+      return;
+    }
+    vsUsbReplySessionKey(uuid);
+    return;
+  }
+
+  if (line.startsWith("VSUSB MARK ")) {
+    String rest = line.substring(strlen("VSUSB MARK "));
+    const int sep = rest.indexOf(' ');
+    if (sep <= 0) {
+      Serial.println("VSUSB ERROR MARK_ARGS");
+      return;
+    }
+    const String prefix = rest.substring(0, sep);
+    String uuid = rest.substring(sep + 1);
+    uuid.trim();
+    if (prefix.length() != 6 || uuid.length() != 36 ||
+        !vsWriteSyncMeta(prefix, uuid, "ingested")) {
+      Serial.println("VSUSB ERROR MARK");
+      return;
+    }
+    Serial.printf("VSUSB OK MARK %s\n", prefix.c_str());
+    return;
+  }
+
+  if (line.startsWith("VSUSB READ ")) {
+    String rest = line.substring(strlen("VSUSB READ "));
+    const int s1 = rest.indexOf(' ');
+    const int s2 = s1 >= 0 ? rest.indexOf(' ', s1 + 1) : -1;
+    if (s1 <= 0 || s2 <= s1) {
+      Serial.println("VSUSB ERROR READ_ARGS");
+      return;
+    }
+    const String path = rest.substring(0, s1);
+    const uint32_t offset = static_cast<uint32_t>(strtoul(rest.substring(s1 + 1, s2).c_str(), nullptr, 10));
+    const uint32_t length = static_cast<uint32_t>(strtoul(rest.substring(s2 + 1).c_str(), nullptr, 10));
+    vsUsbReadFile(path, offset, length);
+    return;
+  }
+
+  Serial.println("VSUSB ERROR UNKNOWN");
+}
+
+static bool vsUsbSyncService() {
+  while (Serial.available()) {
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') continue;
+    if (ch == '\n') {
+      if (vsUsbRxLine.length()) {
+        const String line = vsUsbRxLine;
+        vsUsbRxLine = "";
+        vsUsbHandleCommand(line);
+      }
+    } else if (vsUsbRxLine.length() < 255) {
+      vsUsbRxLine += ch;
+    } else {
+      vsUsbRxLine = "";
+    }
+  }
+  return vsUsbSyncActive;
+}
+
 struct Vs067PrepTiming {
   uint32_t readMs = 0;
   uint32_t mixMs = 0;
@@ -580,6 +806,14 @@ void setup() {
 }
 
 void loop() {
+  // The PC sync app gets exclusive use of USB Serial after an explicit ENTER
+  // handshake. While active, do not run normal UI/Wi-Fi/server code so binary
+  // file reads cannot be polluted by debug output.
+  if (vsUsbSyncService()) {
+    delay(1);
+    return;
+  }
+
   // Deliberately do not call loop_v066_base(): that would invoke the v0.6.6
   // sync engine as well. Reuse the proven recorder/UI loop and service only the
   // v0.6.7 sync engine here.
