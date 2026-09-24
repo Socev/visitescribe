@@ -870,102 +870,32 @@ class ApiSync:
             self.http, self.info
         )
 
-    def status(self, uuid: str, fail: bool = True) -> dict | None:
+    def probe_status(self, uuid: str) -> tuple[bool, dict | None]:
         r = self.http.get(
             self.info.base_url.rstrip("/") + f"/v1/sessions/{uuid}/status",
             headers=api_headers(self.info),
             timeout=30,
         )
-        if not r.ok:
-            if fail:
-                r.raise_for_status()
-            return None
-        return r.json()
+        if r.ok:
+            return True, r.json()
+        if api_error_code(r) == "UNKNOWN_SESSION":
+            return False, None
+        r.raise_for_status()
+        return False, None
 
-    def sync(
+    def status(self, uuid: str) -> dict:
+        exists, body = self.probe_status(uuid)
+        if not exists or body is None:
+            raise RuntimeError("server kent sessie onverwacht niet")
+        return body
+
+    def _post_events_complete_confirm(
         self,
         session: UsbSession,
-        local_wavs: list[Path],
         events_path: Path,
-        session_key: bytes,
-    ) -> None:
-        chunks = describe_chunks(local_wavs)
-        if not chunks:
-            raise RuntimeError("geen geldige audiochunks")
-
-        wrapped = wrap_session_key(session_key, self.server_public_pem)
-        manifest = build_manifest(
-            session, self.info, chunks, self.server_key_id, wrapped
-        )
-        fill_manifest_crypto(manifest, session_key, session.uuid)
-
+        chunk_count: int,
+    ) -> dict:
         base = self.info.base_url.rstrip("/")
-        create = self.http.post(
-            base + "/v1/sessions",
-            headers=api_headers(
-                self.info,
-                {
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": f"{session.uuid}:create",
-                },
-            ),
-            data=json.dumps(manifest, separators=(",", ":")).encode("utf-8"),
-            timeout=60,
-        )
-        if create.status_code not in (200, 201, 409):
-            create.raise_for_status()
-
-        remote = self.status(session.uuid, fail=True) or {}
-        if confirmed(remote):
-            self.log(f"{session.prefix}: server had sessie al compleet")
-            return
-
-        expected = remote.get("expected_chunks")
-        if expected is not None and int(expected) != len(chunks):
-            raise RuntimeError(
-                f"server verwacht {expected} chunks, lokaal zijn het er {len(chunks)}"
-            )
-        missing = remote.get("missing_chunks")
-        if isinstance(missing, list):
-            needed = {int(x) for x in missing}
-        else:
-            needed = {c.sequence for c in chunks}
-
-        upload_chunks = [c for c in chunks if c.sequence in needed]
-        total_bytes = sum(c.ciphertext_size for c in upload_chunks)
-        sent_bytes = 0
-        started = time.monotonic()
-
-        for c in upload_chunks:
-            self.progress(
-                sent_bytes / total_bytes if total_bytes else 1.0,
-                f"{session.prefix}: chunk {c.sequence}/{len(chunks)} voorbereiden",
-            )
-            ciphertext, meta = chunk_crypto(session_key, session.uuid, c)
-            headers = api_headers(
-                self.info,
-                {
-                    "Content-Type": "application/octet-stream",
-                    "X-Chunk-SHA256": meta["ciphertext_sha256"],
-                    "X-Chunk-Nonce": meta["nonce_b64"],
-                    "X-Chunk-AAD": meta["aad"],
-                    "X-Plaintext-SHA256": meta["plaintext_sha256"],
-                    "Idempotency-Key": f"{session.uuid}:chunk:{c.sequence}",
-                },
-            )
-            r = self.http.put(
-                base + f"/v1/sessions/{session.uuid}/chunks/{c.sequence}",
-                headers=headers,
-                data=ciphertext,
-                timeout=120,
-            )
-            r.raise_for_status()
-            sent_bytes += len(ciphertext)
-            self.progress(
-                sent_bytes / total_bytes if total_bytes else 1.0,
-                f"{session.prefix}: {sent_bytes / 1024 / 1024:.1f} MB geupload",
-            )
-
         events = parse_events(events_path)
         r = self.http.post(
             base + f"/v1/sessions/{session.uuid}/events",
@@ -990,20 +920,202 @@ class ApiSync:
                     "Idempotency-Key": f"{session.uuid}:complete",
                 },
             ),
-            json={"chunk_count": len(chunks), "status": "complete"},
+            json={"chunk_count": chunk_count, "status": "complete"},
             timeout=60,
         )
         r.raise_for_status()
 
-        remote = self.status(session.uuid, fail=True) or {}
+        remote = self.status(session.uuid)
         if not confirmed(remote):
             raise RuntimeError(
                 f"server bevestigt ingest niet: missing={remote.get('missing_chunks')}"
             )
+        return remote
 
+    def _upload_v4(
+        self,
+        session: UsbSession,
+        manifest: dict,
+        prepared: list[OpusPreparedChunk],
+        events_path: Path,
+        create_session: bool,
+    ) -> None:
+        base = self.info.base_url.rstrip("/")
+
+        if create_session:
+            create = self.http.post(
+                base + "/v1/sessions",
+                headers=api_headers(
+                    self.info,
+                    {
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": f"{session.uuid}:create",
+                    },
+                ),
+                data=json.dumps(
+                    manifest, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8"),
+                timeout=60,
+            )
+            if create.status_code not in (200, 201):
+                code = api_error_code(create)
+                try:
+                    detail = create.json()
+                except ValueError:
+                    detail = create.text[:500]
+                raise RuntimeError(
+                    f"v4 sessie aanmaken mislukt HTTP {create.status_code} "
+                    f"{code or ''}: {detail}"
+                )
+
+        remote = self.status(session.uuid)
+        if confirmed(remote):
+            self.log(f"{session.prefix}: server had v4 sessie al compleet")
+            delete_v4_spool(session.uuid)
+            return
+
+        expected = remote.get("expected_chunks")
+        if expected is not None and int(expected) != len(prepared):
+            raise RuntimeError(
+                f"server verwacht {expected} chunks, v4 spool bevat {len(prepared)}"
+            )
+
+        missing = remote.get("missing_chunks")
+        needed = (
+            {int(x) for x in missing}
+            if isinstance(missing, list)
+            else {item.sequence for item in prepared}
+        )
+        upload = [item for item in prepared if item.sequence in needed]
+        total_bytes = sum(item.ciphertext_size for item in upload)
+        sent_bytes = 0
+        started = time.monotonic()
+
+        for item in upload:
+            self.progress(
+                sent_bytes / total_bytes if total_bytes else 1.0,
+                f"{session.prefix}: Opus chunk {item.sequence}/{len(prepared)} upload",
+            )
+            headers = api_headers(
+                self.info,
+                {
+                    "Content-Type": "application/octet-stream",
+                    "X-Chunk-SHA256": item.ciphertext_sha256,
+                    "X-Chunk-Nonce": item.nonce_b64,
+                    "X-Chunk-AAD": item.aad,
+                    "X-Plaintext-SHA256": item.plaintext_sha256,
+                    "Idempotency-Key": f"{session.uuid}:chunk:{item.sequence}",
+                },
+            )
+            with item.path.open("rb") as payload:
+                r = self.http.put(
+                    base + f"/v1/sessions/{session.uuid}/chunks/{item.sequence}",
+                    headers=headers,
+                    data=payload,
+                    timeout=120,
+                )
+
+            if not r.ok:
+                try:
+                    detail = r.json()
+                except ValueError:
+                    detail = r.text[:500]
+                raise RuntimeError(
+                    f"Opus chunk {item.sequence} geweigerd HTTP {r.status_code}: {detail}"
+                )
+
+            try:
+                result = r.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Opus chunk {item.sequence}: serverresponse is geen JSON"
+                ) from exc
+
+            if result.get("codec") != "opus":
+                raise RuntimeError(
+                    f"Opus chunk {item.sequence}: server meldt codec={result.get('codec')!r}"
+                )
+            if result.get("flac_deep_verified") is not True:
+                raise RuntimeError(
+                    f"Opus chunk {item.sequence}: deep verify niet bevestigd: {result}"
+                )
+
+            sent_bytes += item.ciphertext_size
+            self.progress(
+                sent_bytes / total_bytes if total_bytes else 1.0,
+                f"{session.prefix}: {sent_bytes / 1024:.0f} KiB Opus geupload",
+            )
+            self.log(
+                f"{session.prefix}: chunk {item.sequence}/{len(prepared)} "
+                f"Opus OK ({item.ciphertext_size / 1024:.0f} KiB)"
+            )
+
+        self._post_events_complete_confirm(
+            session, events_path, len(prepared)
+        )
         elapsed = time.monotonic() - started
+        wire_bytes = sum(item.ciphertext_size for item in prepared)
         self.log(
-            f"{session.prefix}: server bevestigd, {len(chunks)} chunks in {elapsed:.1f}s"
+            f"{session.prefix}: v4 bevestigd, {len(prepared)} Opus chunks, "
+            f"{wire_bytes / 1024 / 1024:.2f} MB, uploadfase {elapsed:.1f}s"
+        )
+        delete_v4_spool(session.uuid)
+
+    def sync(
+        self,
+        session: UsbSession,
+        local_wavs: list[Path],
+        events_path: Path,
+        session_key: bytes,
+    ) -> None:
+        chunks = describe_chunks(local_wavs)
+        if not chunks:
+            raise RuntimeError("geen geldige audiochunks")
+
+        exists, remote = self.probe_status(session.uuid)
+        spool = load_v4_spool(session.uuid)
+
+        if exists:
+            if remote and confirmed(remote):
+                self.log(f"{session.prefix}: server had sessie al compleet")
+                delete_v4_spool(session.uuid)
+                return
+
+            if spool:
+                manifest, prepared = spool
+                self.log(
+                    f"{session.prefix}: bestaande onvoltooide v4 sessie hervatten"
+                )
+                self._upload_v4(
+                    session, manifest, prepared, events_path, create_session=False
+                )
+                return
+
+            # The recorder's Wi-Fi path is deliberately still v3.  Never post a
+            # v4 manifest over an existing session UUID: the API binds codec to
+            # the session and would (correctly) reject that as a conflict.
+            raise ExistingSessionNeedsV3(
+                f"{session.prefix}: sessie bestaat al op server maar heeft geen "
+                "lokale v4 spool; vermoedelijk v3. Maak deze eenmalig af via "
+                "M5 Wi-Fi-sync."
+            )
+
+        self.log(
+            f"{session.prefix}: nieuwe sessie -> API 1.6 v4 Ogg/Opus "
+            "16k mono 24 kbit/s"
+        )
+        manifest, prepared = build_v4_spool(
+            session,
+            self.info,
+            chunks,
+            session_key,
+            self.server_key_id,
+            self.server_public_pem,
+            self.log,
+            self.progress,
+        )
+        self._upload_v4(
+            session, manifest, prepared, events_path, create_session=True
         )
 
 
