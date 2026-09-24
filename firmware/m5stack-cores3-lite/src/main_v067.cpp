@@ -126,7 +126,15 @@ static void vsUsbReadFile(const String& path, uint32_t offset, uint32_t wanted) 
     if (n > 64U * 1024U) n = 64U * 1024U;
     const size_t got = f.read(vs067Scratch, n);
     if (got == 0) break;
-    Serial.write(vs067Scratch, got);
+    size_t written = 0;
+    while (written < got) {
+      const size_t nwrite = Serial.write(vs067Scratch + written, got - written);
+      if (nwrite == 0) {
+        delay(1);
+        continue;
+      }
+      written += nwrite;
+    }
     sent += got;
   }
   f.close();
