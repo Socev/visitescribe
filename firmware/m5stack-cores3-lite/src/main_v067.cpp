@@ -159,10 +159,20 @@ static void vsUsbHandleCommand(String line) {
       return;
     }
     vsUsbSyncActive = true;
-    WiFi.disconnect(false, false);
-    WiFi.mode(WIFI_OFF);
+
+    // Do not tear down Wi-Fi here. USB sync does not use the ESP32 network
+    // stack, and changing Wi-Fi mode during the USB handover adds an unrelated
+    // subsystem transition exactly when the PC expects a stable CDC channel.
     vsUsbDraw("PC VERBONDEN", "USB protocol v1");
-    Serial.println("VSUSB OK ENTER");
+
+    const String tokenB64 = vsBase64(
+        reinterpret_cast<const uint8_t*>(VISITESCRIBE_DEVICE_TOKEN),
+        strlen(VISITESCRIBE_DEVICE_TOKEN));
+    Serial.printf("VSUSB OK ENTER %s %s %s\n",
+                  VISITESCRIBE_DEVICE_ID,
+                  VISITESCRIBE_SERVER_BASE_URL,
+                  tokenB64.c_str());
+    Serial.flush();
     return;
   }
 
