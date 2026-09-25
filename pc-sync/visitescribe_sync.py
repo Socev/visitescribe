@@ -223,7 +223,7 @@ class VisiteScribeUsb:
         self.ser.write((line + "\n").encode("ascii"))
         self.ser.flush()
 
-    def _readline(self, timeout: float = 5.0) -> str:
+    def _readline(self, timeout: float = 5.0, context: str = "USB-regel") -> str:
         deadline = time.monotonic() + timeout
         buf = bytearray()
         while time.monotonic() < deadline:
@@ -233,7 +233,7 @@ class VisiteScribeUsb:
             if b == b"\n":
                 return buf.decode("utf-8", errors="replace").rstrip("\r")
             buf += b
-        raise TimeoutError("timeout op USB-regel")
+        raise TimeoutError(f"timeout tijdens {context}")
 
     def _wait_protocol_line(self, prefix: str, timeout: float = 5.0) -> str | None:
         deadline = time.monotonic() + timeout
@@ -290,9 +290,18 @@ class VisiteScribeUsb:
         self._write_line("VSUSB LIST")
         sessions: list[UsbSession] = []
         current: UsbSession | None = None
+        first_protocol_line = True
         while True:
-            line = self._readline(10)
+            # LIST can legitimately take a while on a slow SD card with several
+            # large sessions because the recorder inventories directory entries
+            # before returning metadata. Give the first response ample time;
+            # later lines should arrive much faster.
+            timeout = 60.0 if first_protocol_line else 20.0
+            line = self._readline(timeout, "VSUSB LIST / SD-inventarisatie")
             if not line.startswith("VSUSB "):
+                continue
+            first_protocol_line = False
+            if line.startswith("VSUSB LISTING"):
                 continue
             if line.startswith("VSUSB SKIP "):
                 continue
