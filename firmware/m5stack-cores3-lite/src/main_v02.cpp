@@ -691,6 +691,7 @@ void serviceSync() {
 void noteActivity() {
   lastUserActivityMs = millis();
   if (displayPower != DisplayPower::ACTIVE) {
+    if (displayPower == DisplayPower::OFF) M5.Display.wakeup();
     M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
     displayPower = DisplayPower::ACTIVE;
     screenDirty = true;
