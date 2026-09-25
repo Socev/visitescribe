@@ -99,6 +99,15 @@ bool captureRunning = false;
 bool audioError = false;
 bool touchWasDown = false;
 
+// Pocket-first control model. A PWR-started recording captures immediately,
+// while touch is only accepted for the first 10 seconds to choose
+// VISITE/VERGADERING. VISITE remains single-patient unless double-PWR creates
+// a second patient.
+bool quickModeChoiceActive = false;
+bool visitPatientFlow = false;
+uint32_t quickModeChoiceStartedMs = 0;
+static constexpr uint32_t QUICK_MODE_CHOICE_MS = 10000;
+
 uint32_t sessionStartedMs = 0;
 uint32_t pauseStartedMs = 0;
 uint32_t totalPausedMs = 0;
@@ -216,11 +225,12 @@ void formatElapsed(char* out, size_t len) {
 }
 
 void drawHome() {
-  drawHeader("HOOFDMENU", "PWR = snelle VISITE");
-  zone(HOME_VISIT, "VISITE", C_BLUE, C_WHITE, "1 patient");
-  zone(HOME_ROUND, "PATIENTRONDE", C_VIOLET, C_WHITE, "aparte audio per patient");
-  zone(HOME_MEETING, "VERGADERING", C_TEAL, C_WHITE, "overleg / bespreking");
-  zone(HOME_MENU, "MENU", C_NAVY, C_WHITE, "status en sync");
+  drawHeader("GEREED", "bediening met PWR");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
+  centeredText(86, "PWR", C_BLUE, 3);
+  centeredText(122, "start opname", C_NAVY, 2);
+  centeredText(168, "PWR PWR", C_TEAL, 2);
+  centeredText(196, "menu", C_GREY, 1);
 }
 
 void drawModeConfirm() {
@@ -230,15 +240,39 @@ void drawModeConfirm() {
 }
 
 void drawRecording() {
-  char title[32], elapsed[16];
-  if (selectedMode == Mode::ROUND) snprintf(title, sizeof(title), "OPNAME PATIENT %u", patientNumber);
-  else snprintf(title, sizeof(title), "OPNAME %s", selectedMode == Mode::VISIT ? "VISITE" : "VERGADERING");
+  char elapsed[16];
   formatElapsed(elapsed, sizeof(elapsed));
+
+  if (quickModeChoiceActive) {
+    const uint32_t used = millis() - quickModeChoiceStartedMs;
+    const uint32_t remaining =
+        used >= QUICK_MODE_CHOICE_MS ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
+    char sub[40];
+    snprintf(sub, sizeof(sub), "opname loopt - nog %lus", (unsigned long)remaining);
+    drawHeader("KIES TYPE", sub);
+    zone(TWO_TOP, "VISITE", C_BLUE, C_WHITE, "patient / patientronde");
+    zone(TWO_BOTTOM, "VERGADERING", C_TEAL, C_WHITE, "dubbel PWR = marker");
+    lastUiSecond = activeElapsedMs() / 1000;
+    return;
+  }
+
+  char title[40];
+  if (selectedMode != Mode::MEETING && patientNumber > 1) {
+    snprintf(title, sizeof(title), "VISITE - PATIENT %u", patientNumber);
+  } else {
+    snprintf(title, sizeof(title), "%s",
+             selectedMode == Mode::MEETING ? "VERGADERING" : "VISITE");
+  }
+
   drawHeader(title, elapsed);
-  zone(THREE_TOP, "PRIVACY", C_AMBER, C_NAVY, "microfoons echt uit");
-  zone(THREE_MIDDLE, selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER", C_BLUE, C_WHITE,
-       selectedMode == Mode::ROUND ? "nieuw audiobestand" : "markeer dit moment");
-  zone(THREE_BOTTOM, "STOP", C_RED, C_WHITE, "of korte druk op PWR");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
+  centeredText(91, "OPNAME LOOPT", C_RED, 2);
+  centeredText(133, "PWR = STOP", C_NAVY, 2);
+  centeredText(174,
+               selectedMode == Mode::MEETING ? "PWR PWR = MARKER"
+                                             : "PWR PWR = VOLGENDE PATIENT",
+               C_BLUE, 1);
+  centeredText(207, "touch uitgeschakeld", C_GREY, 1);
   lastUiSecond = activeElapsedMs() / 1000;
 }
 
@@ -252,9 +286,11 @@ void drawPaused() {
 }
 
 void drawFinished() {
-  drawHeader("OPNAME OPGESLAGEN", "PWR = VUL AAN");
-  zone(TWO_TOP, "VUL AAN", C_BLUE, C_WHITE, "zelfde sessie, nieuw segment");
-  zone(TWO_BOTTOM, "KLAAR", C_GREEN, C_WHITE, "terug naar hoofdmenu");
+  drawHeader("OPNAME OPGESLAGEN");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
+  centeredText(102, "KLAAR", C_GREEN, 3);
+  centeredText(154, "PWR = nieuwe opname", C_NAVY, 1);
+  centeredText(184, "PWR PWR = menu", C_GREY, 1);
 }
 
 void drawMenu() {
@@ -299,6 +335,9 @@ void drawSync() {
 }
 
 void render(bool force = false) {
+  // Do not redraw timers or UI into a sleeping LCD controller.
+  if (!force && displayPower == DisplayPower::OFF) return;
+
   if (!force && !screenDirty) {
     if ((state == AppState::RECORDING || state == AppState::PAUSED) && activeElapsedMs() / 1000 != lastUiSecond) screenDirty = true;
     else return;
