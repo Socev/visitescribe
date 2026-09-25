@@ -151,9 +151,9 @@ static void vsUsbReplyList() {
 
 static bool vsUsbSpeechInfo(const String& path,
                             uint32_t& virtualBytes,
-                            WAVHeader* outHeader = nullptr,
-                            uint32_t* payloadStart = nullptr,
-                            uint32_t* groupBytesOut = nullptr) {
+                            WAVHeader* outHeader,
+                            uint32_t* payloadStart,
+                            uint32_t* groupBytesOut) {
   virtualBytes = 0;
   if (!vsUsbSafePath(path)) return false;
 
