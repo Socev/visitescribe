@@ -404,7 +404,9 @@ void writeHeader(File& f, uint32_t bytes) {
 
 void makeAudioPaths() {
   const char* tag = selectedMode == Mode::VISIT ? "visit" : (selectedMode == Mode::ROUND ? "round" : "meeting");
-  if (selectedMode == Mode::ROUND) {
+  const bool patientFiles =
+      selectedMode == Mode::ROUND || (selectedMode == Mode::VISIT && visitPatientFlow);
+  if (patientFiles) {
     snprintf(wavFinalPath, sizeof(wavFinalPath), "/visitescribe/s%05u_%s_p%03u_s%02u.wav", sessionId, tag, patientNumber, segmentNumber);
   } else if (segmentNumber <= 1) {
     snprintf(wavFinalPath, sizeof(wavFinalPath), "/visitescribe/s%05u_%s.wav", sessionId, tag);
@@ -519,6 +521,52 @@ bool startNewSession(Mode mode) {
   return true;
 }
 
+bool startQuickSession() {
+  // Capture starts immediately. VISITE is the default so doing nothing for ten
+  // seconds still produces a valid patient recording.
+  visitPatientFlow = true;
+  quickModeChoiceActive = true;
+  quickModeChoiceStartedMs = millis();
+
+  if (!startNewSession(Mode::VISIT)) {
+    quickModeChoiceActive = false;
+    visitPatientFlow = false;
+    quickModeChoiceStartedMs = 0;
+    return false;
+  }
+  return true;
+}
+
+void selectQuickMode(Mode mode) {
+  if (!quickModeChoiceActive || !sessionOpen) return;
+
+  if (mode == Mode::MEETING) {
+    selectedMode = Mode::MEETING;
+    visitPatientFlow = false;
+
+    // The open temporary WAV was intentionally started before the type choice.
+    // Keep writing that same file and only alter its final rename target.
+    snprintf(wavFinalPath, sizeof(wavFinalPath),
+             "/visitescribe/s%05u_meeting.wav", sessionId);
+    logEvent("mode_selected_meeting", activeElapsedMs());
+  } else {
+    selectedMode = Mode::VISIT;
+    visitPatientFlow = true;
+    logEvent("mode_selected_visit", activeElapsedMs());
+  }
+
+  quickModeChoiceActive = false;
+  quickModeChoiceStartedMs = 0;
+  lastUserActivityMs = millis();
+  screenDirty = true;
+}
+
+void serviceQuickModeChoiceTimeout() {
+  if (!quickModeChoiceActive) return;
+  if (millis() - quickModeChoiceStartedMs < QUICK_MODE_CHOICE_MS) return;
+  selectQuickMode(Mode::VISIT);
+}
+
 void togglePrivacy() {
   if (state == AppState::RECORDING) {
     uint32_t off = activeElapsedMs();
@@ -539,7 +587,9 @@ void togglePrivacy() {
 
 void addMarkerOrNext() {
   uint32_t off = activeElapsedMs();
-  if (selectedMode == Mode::ROUND) {
+  const bool patientMode =
+      selectedMode == Mode::ROUND || (selectedMode == Mode::VISIT && visitPatientFlow);
+  if (patientMode) {
     if (state == AppState::RECORDING) stopCapture();
     logEvent("patient_boundary", off);
     finalizeWavSegment();
@@ -582,6 +632,9 @@ void resumeSession() {
 void goHome() {
   if (captureRunning) stopCapture();
   sessionOpen = false;
+  quickModeChoiceActive = false;
+  visitPatientFlow = false;
+  quickModeChoiceStartedMs = 0;
   eventsPath[0] = wavTmpPath[0] = wavFinalPath[0] = '\0';
   sessionStartedMs = pauseStartedMs = totalPausedMs = finishedAtMs = 0;
   patientNumber = segmentNumber = 1;
@@ -646,6 +699,7 @@ void noteActivity() {
 
 bool wakeOnlyIfOff() {
   if (displayPower != DisplayPower::OFF) return false;
+  M5.Display.wakeup();
   M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
   displayPower = DisplayPower::ACTIVE;
   lastUserActivityMs = millis();
@@ -728,12 +782,29 @@ void serviceInputs() {
 }
 
 void serviceDisplayPower() {
-  if (state == AppState::SYNC && (syncPhase == SyncPhase::CONNECTING_1 || syncPhase == SyncPhase::CONNECTING_2)) return;
-  uint32_t idle = millis() - lastUserActivityMs;
-  if (idle >= DISPLAY_OFF_MS && displayPower != DisplayPower::OFF) {
-    M5.Display.setBrightness(0);
+  if (state == AppState::SYNC &&
+      (syncPhase == SyncPhase::CONNECTING_1 || syncPhase == SyncPhase::CONNECTING_2)) {
+    return;
+  }
+
+  // Keep the complete 10-second mode chooser visible.
+  if (quickModeChoiceActive) return;
+
+  const uint32_t idle = millis() - lastUserActivityMs;
+  const bool recording =
+      state == AppState::RECORDING || state == AppState::PAUSED;
+  const bool menuLike =
+      state == AppState::MENU || state == AppState::STATUS || state == AppState::SYNC;
+
+  const uint32_t dimMs = recording ? 1500 : (menuLike ? 12000 : 4000);
+  const uint32_t offMs = recording ? 3500 : (menuLike ? 30000 : 10000);
+
+  if (idle >= offMs && displayPower != DisplayPower::OFF) {
+    // Real LCD sleep saves more than brightness=0 and also stops invisible
+    // display traffic until the next physical PWR wake.
+    M5.Display.sleep();
     displayPower = DisplayPower::OFF;
-  } else if (idle >= DISPLAY_DIM_MS && displayPower == DisplayPower::ACTIVE) {
+  } else if (idle >= dimMs && displayPower == DisplayPower::ACTIVE) {
     M5.Display.setBrightness(BRIGHTNESS_DIM);
     displayPower = DisplayPower::DIMMED;
   }
