@@ -477,6 +477,12 @@ static bool readTouch(uint16_t& x, uint16_t& y) {
   y = ((uint16_t)(b[3] & 0x0F) << 8) | b[4];
   if (x >= SCREEN_W) x = SCREEN_W - 1;
   if (y >= SCREEN_H) y = SCREEN_H - 1;
+
+  // The production enclosure uses the AMOLED rotated 180 degrees. The FT3168
+  // still reports native panel coordinates, so rotate touch by the same amount
+  // or visible buttons would react at their former positions.
+  x = (SCREEN_W - 1) - x;
+  y = (SCREEN_H - 1) - y;
   return true;
 }
 
@@ -1133,6 +1139,12 @@ static void usbHotplugService() {
   if (!usbPlugStateKnown) {
     usbPlugStateKnown = true;
     usbWasPlugged = plugged;
+
+    // A recorder that boots/flashes while USB is already attached never sees a
+    // false->true hot-plug edge. On ESP32-S3 HW CDC that can leave a visible
+    // COM port whose RX/TX path is stale. Schedule the same one-shot CDC-only
+    // recovery used for a later physical hot-plug.
+    usbRecoveryPending = plugged;
     return;
   }
   if (!plugged) {
@@ -1461,6 +1473,7 @@ void setup() {
   wavMutex = xSemaphoreCreateMutex();
 
   if (!gfx->begin()) Serial.println("DISPLAY: init failed");
+  gfx->setRotation(2);  // enclosure orientation: 180 degrees
   gfx->fillScreen(C_BG);
   panel->setBrightness(DISPLAY_BRIGHTNESS_ACTIVE);
 
