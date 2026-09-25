@@ -56,6 +56,7 @@ class DeviceInfo:
 class RemoteFile:
     path: str
     size: int
+    kind: str = "raw"
 
 
 @dataclass
@@ -65,6 +66,7 @@ class UsbSession:
     mode: str
     events: RemoteFile | None = None
     wavs: list[RemoteFile] = field(default_factory=list)
+    speech_wavs: list[RemoteFile] = field(default_factory=list)
 
 
 @dataclass
@@ -323,7 +325,15 @@ class VisiteScribeUsb:
                 if current is None:
                     raise RuntimeError("WAV buiten SESSION")
                 p = line.split(" ", 3)
-                current.wavs.append(RemoteFile(path=p[3], size=int(p[2])))
+                current.wavs.append(RemoteFile(path=p[3], size=int(p[2]), kind="raw"))
+                continue
+            if line.startswith("VSUSB SPEECH "):
+                if current is None:
+                    raise RuntimeError("SPEECH buiten SESSION")
+                p = line.split(" ", 3)
+                current.speech_wavs.append(
+                    RemoteFile(path=p[3], size=int(p[2]), kind="speech")
+                )
                 continue
             if line == "VSUSB ENDSESSION":
                 if current:
@@ -356,10 +366,13 @@ class VisiteScribeUsb:
         with local.open("wb") as out:
             while done < remote.size:
                 request = min(USB_READ_BYTES, remote.size - done)
-                self._write_line(f"VSUSB READ {remote.path} {done} {request}")
-                header = self._wait_protocol_line("VSUSB DATA ", 5)
+                verb = "VSUSB READSPEECH" if remote.kind == "speech" else "VSUSB READ"
+                self._write_line(f"{verb} {remote.path} {done} {request}")
+                header = self._wait_protocol_line("VSUSB DATA ", 8)
                 if not header:
-                    raise RuntimeError(f"geen DATA voor {remote.path}")
+                    raise RuntimeError(
+                        f"geen DATA voor {remote.path} ({remote.kind})"
+                    )
                 n = int(header.split()[2])
                 data = self._read_exact(n, 30)
                 out.write(data)
@@ -1300,13 +1313,31 @@ class SyncApp:
 
             with tempfile.TemporaryDirectory(prefix=f"visitescribe-{s.prefix}-") as td:
                 temp = Path(td)
+
+                # New recorder firmware can expose a virtual 16 kHz mono WAV
+                # generated on-the-fly from the 48 kHz stereo master. Prefer
+                # that 1/6-size USB representation, while keeping raw-WAV
+                # fallback for older firmware and other recorder variants.
+                fast_speech = (
+                    len(s.speech_wavs) == len(s.wavs) and len(s.wavs) > 0
+                )
+                transfer_wavs = s.speech_wavs if fast_speech else s.wavs
+                if fast_speech:
+                    raw_bytes = sum(w.size for w in s.wavs)
+                    speech_bytes = sum(w.size for w in transfer_wavs)
+                    self.log(
+                        f"{s.prefix}: snelle USB-route 16k mono "
+                        f"({raw_bytes / 1024 / 1024:.1f} -> "
+                        f"{speech_bytes / 1024 / 1024:.1f} MB over USB)"
+                    )
+
                 total_download = (s.events.size if s.events else 0) + sum(
-                    w.size for w in s.wavs
+                    w.size for w in transfer_wavs
                 )
                 downloaded_before = 0
 
                 local_wavs: list[Path] = []
-                for wi, remote_wav in enumerate(s.wavs):
+                for wi, remote_wav in enumerate(transfer_wavs):
                     local = temp / f"audio-{wi:03d}.wav"
 
                     def wav_progress(done: int, total: int, base=downloaded_before):
