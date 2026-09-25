@@ -23,6 +23,60 @@ static bool vs067EnsureScratch();
 static bool vsUsbSyncActive = false;
 static String vsUsbRxLine;
 
+// Native ESP32-S3 HW CDC can enumerate at the PC after the recorder has already
+// been running on battery, while its RX path remains stale until the MCU is
+// reset.  Recover only the USB CDC peripheral on a physical hot-plug; never
+// touch SD, audio capture or the recorder session.
+static bool vsUsbPlugStateKnown = false;
+static bool vsUsbWasPlugged = false;
+static bool vsUsbRecoveryPending = false;
+static uint32_t vsUsbLastRecoveryMs = 0;
+
+static bool vsUsbRecorderBusy() {
+  return captureRunning ||
+         state == AppState::RECORDING ||
+         state == AppState::PAUSED;
+}
+
+static void vsUsbHotplugService() {
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  const bool plugged = Serial.isPlugged();
+
+  if (!vsUsbPlugStateKnown) {
+    vsUsbPlugStateKnown = true;
+    vsUsbWasPlugged = plugged;
+    return;
+  }
+
+  if (!plugged) {
+    vsUsbWasPlugged = false;
+    vsUsbRecoveryPending = false;
+    return;
+  }
+
+  if (!vsUsbWasPlugged) {
+    vsUsbWasPlugged = true;
+    vsUsbRecoveryPending = true;
+  }
+
+  if (!vsUsbRecoveryPending ||
+      vsUsbSyncActive ||
+      vsUsbRecorderBusy() ||
+      millis() - vsUsbLastRecoveryMs < 1500) {
+    return;
+  }
+
+  // Reinitialising HW CDC intentionally makes Windows drop and recreate the
+  // COM handle.  The PC watcher already tolerates that re-enumeration.
+  vsUsbRecoveryPending = false;
+  vsUsbLastRecoveryMs = millis();
+  Serial.end();
+  delay(80);
+  Serial.begin(115200);
+  delay(250);
+#endif
+}
+
 static bool vsUsbSafePath(const String& path) {
   return path.startsWith("/visitescribe/") &&
          path.indexOf("..") < 0 &&
@@ -246,6 +300,8 @@ static void vsUsbHandleCommand(String line) {
 }
 
 static bool vsUsbSyncService() {
+  vsUsbHotplugService();
+
   while (Serial.available()) {
     const char ch = static_cast<char>(Serial.read());
     if (ch == '\r') continue;
