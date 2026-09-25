@@ -129,56 +129,84 @@ class VisiteScribeUsb:
             log("Geen COM-poorten gevonden.")
             return None
 
+        # The CoreS3-Lite exposes Espressif VID 0x303A.  Probe likely recorder
+        # ports first so an old motherboard COM1 cannot delay hot-plug sync.
+        ports.sort(key=lambda p: (0 if p.vid == 0x303A else 1, p.device))
+
         for p in ports:
-            ser = None
-            try:
-                ser = cls._open_port(p.device)
+            # A known ESP32-S3 gets a long hot-plug window. Generic ports only
+            # get a quick courtesy probe.
+            known_esp = p.vid == 0x303A
+            rounds = 3 if known_esp else 1
+            hello_attempts = 8 if known_esp else 2
 
-                # Native USB CDC can need a little time after the host opens the
-                # handle.  Do not hammer the port immediately.
-                time.sleep(0.75)
+            for reopen in range(rounds):
+                ser = None
                 try:
+                    ser = cls._open_port(p.device)
+                    time.sleep(0.9 if known_esp else 0.25)
                     ser.reset_input_buffer()
-                except serial.SerialException:
-                    # Device may have re-enumerated once.  Let the next scan
-                    # reopen the fresh COM handle instead of treating this as a
-                    # permanent failure.
-                    raise
+                    dev = cls(ser)
 
-                dev = cls(ser)
-                for attempt in range(5):
-                    try:
+                    for attempt in range(hello_attempts):
                         dev._write_line("VSUSB HELLO")
-                    except serial.SerialException:
-                        raise
-                    line = dev._wait_protocol_line("VSUSB READY", timeout=1.2)
-                    if line:
-                        parts = line.split()
-                        if len(parts) >= 3 and int(parts[2]) == USB_PROTOCOL:
-                            log(
-                                f"VisiteScribe gevonden op {p.device} "
-                                f"({p.description or 'USB serial'})"
-                            )
-                            return dev
-                    time.sleep(0.35)
+                        line = dev._wait_protocol_line(
+                            "VSUSB READY",
+                            timeout=1.25 if known_esp else 0.6,
+                        )
+                        if line:
+                            parts = line.split()
+                            if len(parts) >= 3 and int(parts[2]) == USB_PROTOCOL:
+                                log(
+                                    f"VisiteScribe gevonden op {p.device} "
+                                    f"({p.description or 'USB serial'})"
+                                )
+                                return dev
+                        time.sleep(0.3)
 
-                log(
-                    f"{p.device}: poort opent wel maar geen VSUSB READY. "
-                    f"Beschrijving={p.description!r}, VID={p.vid}, PID={p.pid}"
-                )
-            except (serial.SerialException, OSError) as exc:
-                log(
-                    f"{p.device}: USB-poort tijdelijk niet beschikbaar ({exc}). "
-                    "Als de Serial Monitor dicht is, wacht de app op re-enumeratie en probeert opnieuw."
-                )
-            except Exception as exc:
-                log(f"{p.device}: detectiefout: {type(exc).__name__}: {exc}")
+                    if ser:
+                        ser.close()
+                        ser = None
+                    if known_esp and reopen + 1 < rounds:
+                        log(
+                            f"{p.device}: ESP32-S3 gezien maar nog geen VSUSB READY; "
+                            f"USB-poort opnieuw openen ({reopen + 2}/{rounds})..."
+                        )
+                        time.sleep(0.75)
 
-            if ser:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
+                except (serial.SerialException, OSError) as exc:
+                    log(
+                        f"{p.device}: USB-poort tijdelijk niet beschikbaar ({exc}); "
+                        "automatisch opnieuw proberen."
+                    )
+                    if ser:
+                        try:
+                            ser.close()
+                        except Exception:
+                            pass
+                    if known_esp and reopen + 1 < rounds:
+                        time.sleep(0.75)
+                        continue
+                    break
+                except Exception as exc:
+                    log(f"{p.device}: detectiefout: {type(exc).__name__}: {exc}")
+                    if ser:
+                        try:
+                            ser.close()
+                        except Exception:
+                            pass
+                    break
+
+            if known_esp:
+                log(
+                    f"{p.device}: ESP32-S3 blijft zichtbaar maar antwoordt niet op VSUSB HELLO. "
+                    "De app blijft automatisch opnieuw proberen."
+                )
+            elif p.vid is not None:
+                log(
+                    f"{p.device}: USB-serieel apparaat, maar geen VisiteScribe-handshake."
+                )
+
         return None
 
     @property
