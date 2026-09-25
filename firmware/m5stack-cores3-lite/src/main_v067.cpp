@@ -20,6 +20,14 @@ static constexpr size_t VS067_SCRATCH_BYTES = 512U * 1024U;
 static uint8_t* vs067Scratch = nullptr;
 static bool vs067EnsureScratch();
 
+// Forward declaration: LIST advertises the compact virtual speech WAV before
+// the helper implementation later in this overlay.
+static bool vsUsbSpeechInfo(const String& path,
+                            uint32_t& virtualBytes,
+                            WAVHeader* outHeader = nullptr,
+                            uint32_t* payloadStart = nullptr,
+                            uint32_t* groupBytesOut = nullptr);
+
 static bool vsUsbSyncActive = false;
 static String vsUsbRxLine;
 
