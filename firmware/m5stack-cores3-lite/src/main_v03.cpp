@@ -39,6 +39,13 @@
 
 static bool axp2101DirectOk = false;
 
+// Software double-click recogniser. We delay the single-click action briefly so
+// the first click can never start/stop a recording before we know whether a
+// second click follows.
+static constexpr uint32_t PWR_DOUBLE_CLICK_MS = 360;
+static bool pwrClickPendingV03 = false;
+static uint32_t pwrFirstClickMsV03 = 0;
+
 // Later sync layers may attach a synthetic upload benchmark here. Keeping this
 // as a hook means older recorder layers still compile and simply fall back to
 // normal SYNC if no test implementation is installed.
@@ -115,65 +122,156 @@ static void handleMenuTouchV03(int x, int y) {
 #endif
 }
 
+static void pocketOpenMenuV03() {
+  if (state == AppState::SYNC) return;
+
+  // FINISHED still owns the just-closed logical session until goHome().
+  if (state == AppState::FINISHED) goHome();
+
+  state = AppState::MENU;
+  screenDirty = true;
+}
+
+static void pocketSinglePowerV03() {
+  if (state == AppState::SYNC) return;
+
+  if (state == AppState::RECORDING || state == AppState::PAUSED) {
+    // A session stopped before the 10 s choice expires is a VISITE by default.
+    if (quickModeChoiceActive) selectQuickMode(Mode::VISIT);
+    stopSession();
+    return;
+  }
+
+  if (!sdOk) {
+    showStorageStatus();
+    return;
+  }
+
+  if (state == AppState::FINISHED) goHome();
+
+  if (!startQuickSession()) {
+    showStorageStatus();
+    return;
+  }
+
+  lastUserActivityMs = millis();
+  screenDirty = true;
+}
+
+static void pocketDoublePowerV03() {
+  if (state == AppState::SYNC) return;
+
+  if (state == AppState::RECORDING || state == AppState::PAUSED) {
+    // A patient boundary before an explicit type choice unambiguously makes
+    // this a VISITE. Lock that choice first so filenames/events stay coherent.
+    if (quickModeChoiceActive) selectQuickMode(Mode::VISIT);
+    addMarkerOrNext();
+    lastUserActivityMs = millis();
+    screenDirty = true;
+    return;
+  }
+
+  pocketOpenMenuV03();
+}
+
 static void serviceInputsV03() {
   uint8_t pek = 0;
   if (axp2101DirectOk) {
     pek = M5.Power.Axp2101.getPekPress();
   }
 
-  int tx = 0, ty = 0, rawX = 0, rawY = 0;
-  bool touchDown = readTouchV03(tx, ty, rawX, rawY);
-
+  // A physical PWR short press is authoritative. If the LCD is asleep, this
+  // press is consumed exclusively by wake-up, exactly as requested.
   if ((pek & 0x02) != 0) {
-    AppState before = state;
-    bool wakeOnly = wakeOnlyIfOff();
-    if (!wakeOnly) {
+    const AppState before = state;
+
+    if (wakeOnlyIfOff()) {
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      Serial.printf("PWR wake-only app=%u\n", (unsigned)before);
+    } else {
       noteActivity();
-      if (!sdOk && (state == AppState::HOME || state == AppState::MODE_CONFIRM)) {
-        // A quick-record request cannot succeed without storage. Show the
-        // reason instead of silently doing nothing.
-        showStorageStatus();
+      const uint32_t now = millis();
+
+      if (pwrClickPendingV03 &&
+          now - pwrFirstClickMsV03 <= PWR_DOUBLE_CLICK_MS) {
+        pwrClickPendingV03 = false;
+        pwrFirstClickMsV03 = 0;
+        pocketDoublePowerV03();
+        Serial.printf("PWR double app=%u->%u\n",
+                      (unsigned)before, (unsigned)state);
       } else {
-        handlePowerButton();
+        pwrClickPendingV03 = true;
+        pwrFirstClickMsV03 = now;
+        Serial.printf("PWR first-click pending app=%u\n", (unsigned)before);
       }
     }
-    Serial.printf("PWR short press state=%u sd=%d wakeOnly=%d app=%u->%u\n",
-                  (unsigned)pek, sdOk ? 1 : 0, wakeOnly ? 1 : 0,
+  }
+
+  // Fire a single-click action only once the double-click window has expired.
+  if (pwrClickPendingV03 &&
+      millis() - pwrFirstClickMsV03 > PWR_DOUBLE_CLICK_MS) {
+    const AppState before = state;
+    pwrClickPendingV03 = false;
+    pwrFirstClickMsV03 = 0;
+    pocketSinglePowerV03();
+    Serial.printf("PWR single app=%u->%u\n",
                   (unsigned)before, (unsigned)state);
   }
+
+  serviceQuickModeChoiceTimeout();
+
+  // Touch is deliberately not even polled on HOME, during a locked recording,
+  // or while the LCD sleeps. This prevents pocket touches and removes the old
+  // ~200 I2C touch reads/second power cost.
+  const bool touchAllowed =
+      displayPower != DisplayPower::OFF &&
+      (quickModeChoiceActive ||
+       state == AppState::MENU ||
+       state == AppState::STATUS ||
+       state == AppState::SYNC);
+
+  int tx = 0, ty = 0, rawX = 0, rawY = 0;
+  const bool touchDown =
+      touchAllowed && readTouchV03(tx, ty, rawX, rawY);
 
   if (touchDown && !touchWasDown) {
-    AppState before = state;
-    bool wakeOnly = wakeOnlyIfOff();
-    if (!wakeOnly) {
-      noteActivity();
-      // Navigation is always allowed. Only the actual START action is
-      // redirected to STATUS when storage is unavailable.
-      if (!sdOk && state == AppState::MODE_CONFIRM && TWO_TOP.contains(tx, ty)) {
-        showStorageStatus();
-      } else if (state == AppState::MENU) {
-        handleMenuTouchV03(tx, ty);
-      } else {
-        handleTouch(tx, ty);
-      }
-    }
-    Serial.printf("TOUCH raw=%d,%d converted=%d,%d rot=%u size=%dx%d sd=%d wakeOnly=%d app=%u->%u\n",
-                  rawX, rawY, tx, ty,
-                  (unsigned)M5.Display.getRotation(),
-                  M5.Display.width(), M5.Display.height(),
-                  sdOk ? 1 : 0, wakeOnly ? 1 : 0,
-                  (unsigned)before, (unsigned)state);
-  }
-  touchWasDown = touchDown;
+    const AppState before = state;
+    noteActivity();
 
-  // v0.5 reproduces this input service but calls the inherited renderer
-  // directly afterwards. Draw the four-row menu here and clear screenDirty so
-  // that old three-row drawMenu() cannot overwrite it later in the same loop.
+    if (quickModeChoiceActive) {
+      if (TWO_TOP.contains(tx, ty)) {
+        selectQuickMode(Mode::VISIT);
+      } else if (TWO_BOTTOM.contains(tx, ty)) {
+        selectQuickMode(Mode::MEETING);
+      }
+    } else if (state == AppState::MENU) {
+      handleMenuTouchV03(tx, ty);
+    } else if (state == AppState::STATUS) {
+      if (STATUS_BACK.contains(tx, ty)) {
+        state = AppState::MENU;
+        screenDirty = true;
+      }
+    } else if (state == AppState::SYNC) {
+      handleTouch(tx, ty);
+    }
+
+    Serial.printf(
+        "TOUCH pocket raw=%d,%d converted=%d,%d allowed=%d app=%u->%u\n",
+        rawX, rawY, tx, ty, touchAllowed ? 1 : 0,
+        (unsigned)before, (unsigned)state);
+  }
+
+  touchWasDown = touchAllowed ? touchDown : false;
+
   if (state == AppState::MENU && screenDirty) {
     screenDirty = false;
     drawMenuV03();
   }
 
+  // Keep M5Unified housekeeping alive for PMIC/audio internals. Long-press PEK
+  // events are intentionally ignored by the application; there is no privacy
+  // action on PWR.
   M5.update();
 }
 
