@@ -116,3 +116,37 @@ A standard WAV/FAT32 file has an effective ~4 GB ceiling, corresponding to rough
 ## Current caveat
 
 This tree was written against the official CoreS3-Lite hardware documentation and current M5Unified API. It has not yet been compiled on the author's local CoreS3-Lite toolchain. If the first build reports an error, capture only the **first compiler error plus roughly the last 20 lines**; fix that before chasing later cascading errors.
+
+
+## Pocket-first power-button controls
+
+The demo/production CoreS3-Lite firmware uses the physical PWR button as the
+primary control for home visits:
+
+- if the LCD is asleep, the first short PWR press only wakes the display;
+- with the display awake and no recording active:
+  - single PWR starts recording after the short double-click decision window;
+  - double PWR opens MENU;
+- after PWR starts a recording, audio capture begins immediately and a
+  10-second VISITE / VERGADERING touch chooser is shown;
+- if no choice is made within 10 seconds, VISITE is selected automatically;
+- after the choice, touch input is ignored for the rest of the recording;
+- during a VISITE, double PWR closes the current patient WAV and starts the
+  next patient;
+- during a VERGADERING, double PWR inserts a marker;
+- during any recording, single PWR stops the recording;
+- long PWR has no application action; there is no privacy mode in this control
+  model.
+
+VISITE uses patient-capable filenames from patient 1. A session with only one
+patient is still reported as `single_patient`; patient 2+ changes the session
+mode to `multi_patient`.
+
+### Power saving
+
+For pocket use the LCD controller enters real sleep shortly after the recording
+type is locked. While the screen is asleep the UI timer is not redrawn and the
+direct touch controller is not polled. M5Unified's duplicate touch polling is
+also disabled because this firmware owns the FT6336 input path directly.
+Battery polling outside STATUS is reduced to once per minute. Wi-Fi remains off
+unless sync is explicitly requested.
