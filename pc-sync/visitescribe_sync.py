@@ -855,10 +855,36 @@ def build_v4_spool(
     return manifest, prepared
 
 
-def delete_v4_spool(uuid: str) -> None:
+def delete_v4_spool(
+    uuid: str,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """Best-effort cleanup of retry spool.
+
+    A confirmed server ingest must never be turned into a sync failure merely
+    because Windows, antivirus/indexing or a just-closed file handle still has
+    the spool directory briefly locked.  The encrypted spool is only a retry
+    cache; leaving it behind is safe and a later run may clean it up.
+    """
     root = SPOOL_ROOT / uuid
-    if root.exists():
-        shutil.rmtree(root)
+    if not root.exists():
+        return True
+
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            shutil.rmtree(root)
+            return True
+        except (PermissionError, OSError) as exc:
+            last_error = exc
+            time.sleep(0.20 * (attempt + 1))
+
+    if log:
+        log(
+            f"WAARSCHUWING: retry-spool kon nog niet worden verwijderd: "
+            f"{root} ({last_error}). Sync blijft geldig; later opnieuw opruimen."
+        )
+    return False
 
 
 def parse_events(path: Path) -> list[dict]:
@@ -999,7 +1025,7 @@ class ApiSync:
         remote = self.status(session.uuid)
         if confirmed(remote):
             self.log(f"{session.prefix}: server had v4 sessie al compleet")
-            delete_v4_spool(session.uuid)
+            delete_v4_spool(session.uuid, self.log)
             return
 
         expected = remote.get("expected_chunks")
@@ -1087,7 +1113,7 @@ class ApiSync:
             f"{session.prefix}: v4 bevestigd, {len(prepared)} Opus chunks, "
             f"{wire_bytes / 1024 / 1024:.2f} MB, uploadfase {elapsed:.1f}s"
         )
-        delete_v4_spool(session.uuid)
+        delete_v4_spool(session.uuid, self.log)
 
     def sync(
         self,
@@ -1106,7 +1132,7 @@ class ApiSync:
         if exists:
             if remote and confirmed(remote):
                 self.log(f"{session.prefix}: server had sessie al compleet")
-                delete_v4_spool(session.uuid)
+                delete_v4_spool(session.uuid, self.log)
                 return
 
             if spool:
