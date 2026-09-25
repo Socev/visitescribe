@@ -161,3 +161,59 @@ No patient identifiers are written.
 ## Next integration step
 
 After the IM73D122 dual-PDM lab firmware has been validated on real microphones, merge its audio task into this large-touch recorder UI. At that point STATUS can report live `2/2` microphone health and SYNC can upload encrypted audio/session data using the existing VisiteScribe API contract.
+
+
+## Production firmware
+
+A new `waveshare-v2-production` environment combines the proven AMOLED/touch
+workflow with the dual IM73D122 PDM recorder and the same automatic VSUSB v1
+PC-sync protocol used by the CoreS3-Lite.
+
+It records an authoritative local master as:
+
+- 48 kHz
+- 16-bit PCM
+- stereo
+- WAV on microSD
+
+The production session layout matches the CoreS3-Lite:
+
+```text
+/visitescribe/s00001_events.csv
+/visitescribe/s00001_sync.txt
+/visitescribe/s00001_visit.wav
+/visitescribe/s00002_round_p001_s01.wav
+/visitescribe/s00002_round_p002_s01.wav
+/visitescribe/s00003_meeting.wav
+```
+
+The existing Windows PC sync app therefore works without a Waveshare-specific
+client. USB sync is automatic after plugging in the recorder. The PC app creates
+API v4 Ogg/Opus sync copies; the WAV masters remain on the SD card.
+
+Privacy pause disables the PDM receiver itself rather than merely suppressing
+file writes.
+
+### API credentials for PC sync
+
+The recorder passes its API device ID/token to the PC app over USB. For the
+current one-user prototype it is acceptable to reuse the CoreS3-Lite device
+credentials. Copy the existing local secrets file:
+
+```powershell
+Copy-Item ..\m5stack-cores3-lite\include\server_secrets.h include\server_secrets.h
+```
+
+Or copy `include/server_secrets.example.h` to `server_secrets.h` and provision
+a separate API device.
+
+### Build and flash production
+
+From `firmware/waveshare-amoled-1.64`:
+
+```powershell
+pio run -e waveshare-v2-production -t upload
+```
+
+The original `waveshare-v2` UI prototype and the separate IM73D122 lab project
+remain available for regression testing.
