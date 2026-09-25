@@ -101,7 +101,16 @@ static void vsUsbReplyInfo() {
 }
 
 static void vsUsbReplyList() {
+  // LIST may need several seconds on a full/slow SD card. Tell the PC
+  // immediately that the recorder is alive before starting directory scans.
+  Serial.println("VSUSB LISTING START");
+  Serial.flush();
+
   const auto prefixes = vsPendingPrefixes();
+
+  Serial.printf("VSUSB LISTING %u\n", (unsigned)prefixes.size());
+  Serial.flush();
+
   uint32_t listed = 0;
   for (const auto& prefix : prefixes) {
     VsLocalSession local;
