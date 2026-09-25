@@ -280,6 +280,11 @@ void VISITESCRIBE_V03_SETUP_NAME() {
 
   axp2101DirectOk = M5.Power.Axp2101.begin();
 
+  // This firmware reads FT6336 directly only while touch is actually useful.
+  // Disable M5Unified's own Touch.update() path so M5.update() no longer polls
+  // the controller on every ~5 ms loop iteration in a pocket/recording state.
+  M5.Touch.end();
+
   // setup_v02 historically replaced the whole UI with a static SD error page
   // when mounting failed. Keep the recorder UI accessible instead; MENU >
   // STATUS will clearly show MICROSD FOUT, and START/PWR will route there too.
