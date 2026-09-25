@@ -561,7 +561,8 @@ static void recoverTmpWavs() {
     if (f) f.close();
     if (physical <= sizeof(WAVHeader)) continue;
 
-    f = SD.open(tmp, FILE_WRITE);
+    // Open in-place without truncating the recovered PCM payload.
+    f = SD.open(tmp, "r+");
     if (!f) continue;
     writeWavHeader(f, static_cast<uint32_t>(physical - sizeof(WAVHeader)));
     f.close();
