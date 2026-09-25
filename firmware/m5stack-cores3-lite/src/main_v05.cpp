@@ -202,7 +202,9 @@ void VISITESCRIBE_V05_LOOP_NAME() {
   serviceAudio();
   serviceSyncV05();
 
-  if (millis() - lastBatteryRefreshMs > 10000) {
+  const uint32_t batteryRefreshMs =
+      state == AppState::STATUS ? 10000UL : 60000UL;
+  if (millis() - lastBatteryRefreshMs > batteryRefreshMs) {
     int old = batteryPct;
     refreshBattery();
     if (old != batteryPct && state == AppState::STATUS) screenDirty = true;
