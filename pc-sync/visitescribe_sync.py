@@ -300,9 +300,11 @@ class VisiteScribeUsb:
             line = self._readline(timeout, "VSUSB LIST / SD-inventarisatie")
             if not line.startswith("VSUSB "):
                 continue
-            first_protocol_line = False
             if line.startswith("VSUSB LISTING"):
+                # Recorder keepalive while a slow SD inventory is running.
+                # Do not consume the generous first-response timeout yet.
                 continue
+            first_protocol_line = False
             if line.startswith("VSUSB SKIP "):
                 continue
             if line.startswith("VSUSB SESSION "):
