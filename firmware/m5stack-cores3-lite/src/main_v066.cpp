@@ -333,11 +333,17 @@ static std::vector<String> vsCollectWavs(const String& prefix) {
 }
 
 static String vsModeFromWavs(const std::vector<String>& wavs) {
+  uint32_t visitPatientFiles = 0;
   for (const auto& w : wavs) {
-    if (w.indexOf("_round_") >= 0) return "multi_patient";
     if (w.indexOf("_meeting") >= 0) return "meeting";
+    if (w.indexOf("_round_") >= 0) return "multi_patient";
+    if (w.indexOf("_visit_p") >= 0) ++visitPatientFiles;
   }
-  return "single_patient";
+
+  // Pocket-mode VISITE writes patient-capable filenames from patient 1 onward.
+  // One such WAV is still a normal single-patient visit; only patient 2+
+  // changes the server semantic mode to multi_patient.
+  return visitPatientFiles > 1 ? "multi_patient" : "single_patient";
 }
 
 static std::vector<String> vsPendingPrefixes() {
