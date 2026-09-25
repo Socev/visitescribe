@@ -136,11 +136,230 @@ static void vsUsbReplyList() {
       const size_t size = wav ? wav.size() : 0;
       if (wav) wav.close();
       Serial.printf("VSUSB WAV %u %s\n", (unsigned)size, path.c_str());
+
+      uint32_t speechBytes = 0;
+      if (vsUsbSpeechInfo(path, speechBytes) && speechBytes > sizeof(WAVHeader)) {
+        Serial.printf("VSUSB SPEECH %u %s\n",
+                      (unsigned)speechBytes, path.c_str());
+      }
     }
     Serial.println("VSUSB ENDSESSION");
     ++listed;
   }
   Serial.printf("VSUSB ENDLIST %lu\n", (unsigned long)listed);
+}
+
+static bool vsUsbSpeechInfo(const String& path,
+                            uint32_t& virtualBytes,
+                            WAVHeader* outHeader = nullptr,
+                            uint32_t* payloadStart = nullptr,
+                            uint32_t* groupBytesOut = nullptr) {
+  virtualBytes = 0;
+  if (!vsUsbSafePath(path)) return false;
+
+  File f = SD.open(path, FILE_READ);
+  if (!f) return false;
+
+  WAVHeader h;
+  if (!vsReadWavHeader(f, h)) {
+    f.close();
+    return false;
+  }
+
+  uint32_t ratio = 0, groupBytes = 0;
+  if (!vsSpeechSourceShape(h, ratio, groupBytes)) {
+    f.close();
+    return false;
+  }
+
+  const uint32_t start = static_cast<uint32_t>(f.position());
+  const uint32_t physical = static_cast<uint32_t>(f.size());
+  f.close();
+
+  uint32_t sourceBytes = h.dataSize;
+  const uint32_t physicalPayload = physical > start ? physical - start : 0;
+  if (sourceBytes > physicalPayload) sourceBytes = physicalPayload;
+  sourceBytes -= sourceBytes % groupBytes;
+
+  const uint32_t outputSamples = sourceBytes / groupBytes;
+  const uint32_t outputDataBytes = outputSamples * sizeof(int16_t);
+
+  WAVHeader out = h;
+  out.audioFormat = 1;
+  out.numChannels = VS_SPEECH_CHANNELS;
+  out.sampleRate = VS_SPEECH_RATE;
+  out.bitsPerSample = VS_SPEECH_BITS;
+  out.blockAlign = VS_SPEECH_CHANNELS * (VS_SPEECH_BITS / 8);
+  out.byteRate = VS_SPEECH_RATE * out.blockAlign;
+  out.dataSize = outputDataBytes;
+  out.fileSize = 36 + outputDataBytes;
+
+  virtualBytes = sizeof(WAVHeader) + outputDataBytes;
+  if (outHeader) *outHeader = out;
+  if (payloadStart) *payloadStart = start;
+  if (groupBytesOut) *groupBytesOut = groupBytes;
+  return true;
+}
+
+static bool vsUsbWriteAll(const uint8_t* data, size_t len) {
+  size_t written = 0;
+  while (written < len) {
+    const size_t n = Serial.write(data + written, len - written);
+    if (n == 0) {
+      if (!Serial.isPlugged()) return false;
+      delay(1);
+      continue;
+    }
+    written += n;
+  }
+  return true;
+}
+
+static void vsUsbReadSpeech(const String& path, uint32_t offset, uint32_t wanted) {
+  static constexpr uint32_t MAX_READ = 256U * 1024U;
+  if (!vsUsbSafePath(path) || wanted == 0 || wanted > MAX_READ) {
+    Serial.println("VSUSB ERROR READSPEECH_ARGS");
+    return;
+  }
+  if (!vs067EnsureScratch()) {
+    Serial.println("VSUSB ERROR READSPEECH_BUFFER");
+    return;
+  }
+
+  uint32_t virtualBytes = 0, payloadStart = 0, groupBytes = 0;
+  WAVHeader outHeader;
+  if (!vsUsbSpeechInfo(path, virtualBytes, &outHeader, &payloadStart, &groupBytes)) {
+    Serial.println("VSUSB ERROR READSPEECH_INFO");
+    return;
+  }
+  if (offset > virtualBytes) {
+    Serial.println("VSUSB ERROR READSPEECH_SEEK");
+    return;
+  }
+
+  uint32_t sendBytes = wanted;
+  if (sendBytes > virtualBytes - offset) sendBytes = virtualBytes - offset;
+
+  Serial.printf("VSUSB DATA %lu\n", (unsigned long)sendBytes);
+  Serial.flush();
+
+  uint32_t sent = 0;
+  uint32_t cursor = offset;
+  const uint8_t* headerBytes = reinterpret_cast<const uint8_t*>(&outHeader);
+
+  if (cursor < sizeof(WAVHeader) && sent < sendBytes) {
+    size_t n = sizeof(WAVHeader) - cursor;
+    if (n > sendBytes - sent) n = sendBytes - sent;
+    if (!vsUsbWriteAll(headerBytes + cursor, n)) {
+      Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+      return;
+    }
+    cursor += n;
+    sent += n;
+  }
+
+  if (sent < sendBytes) {
+    const uint32_t pcmOffset = cursor - sizeof(WAVHeader);
+    if ((pcmOffset & 1U) != 0 || ((sendBytes - sent) & 1U) != 0) {
+      Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+      Serial.flush();
+      return;
+    }
+
+    const uint32_t outputSampleStart = pcmOffset / sizeof(int16_t);
+    const uint64_t sourceByteOffset64 =
+        static_cast<uint64_t>(payloadStart) +
+        static_cast<uint64_t>(outputSampleStart) * groupBytes;
+    if (sourceByteOffset64 > UINT32_MAX) {
+      Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+      Serial.flush();
+      return;
+    }
+
+    File wav = SD.open(path, FILE_READ);
+    if (!wav || !wav.seek(static_cast<uint32_t>(sourceByteOffset64))) {
+      if (wav) wav.close();
+      Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+      Serial.flush();
+      return;
+    }
+
+    const uint32_t ratio = groupBytes /
+        (outHeader.numChannels == 0 ? sizeof(int16_t)
+                                    : sizeof(int16_t) * outHeader.numChannels);
+    (void)ratio; // source shape is derived below from the actual source header.
+
+    WAVHeader sourceHeader;
+    wav.seek(0);
+    if (!vsReadWavHeader(wav, sourceHeader)) {
+      wav.close();
+      Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+      Serial.flush();
+      return;
+    }
+    uint32_t sourceRatio = 0, sourceGroupBytes = 0;
+    if (!vsSpeechSourceShape(sourceHeader, sourceRatio, sourceGroupBytes) ||
+        sourceGroupBytes != groupBytes ||
+        !wav.seek(static_cast<uint32_t>(sourceByteOffset64))) {
+      wav.close();
+      Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+      Serial.flush();
+      return;
+    }
+
+    const size_t samplesPerOutput =
+        static_cast<size_t>(sourceHeader.numChannels) * sourceRatio;
+    const size_t maxSourceSamples = VS067_SCRATCH_BYTES / sizeof(int16_t);
+    const size_t maxOutputGroups = maxSourceSamples / samplesPerOutput;
+
+    uint32_t outputBytesRemaining = sendBytes - sent;
+    while (outputBytesRemaining > 0) {
+      size_t groups = outputBytesRemaining / sizeof(int16_t);
+      if (groups > maxOutputGroups) groups = maxOutputGroups;
+      if (groups == 0) break;
+
+      const size_t sourceSamples = groups * samplesPerOutput;
+      const size_t readBytes = sourceSamples * sizeof(int16_t);
+
+      size_t totalRead = 0;
+      while (totalRead < readBytes) {
+        const size_t got = wav.read(vs067Scratch + totalRead, readBytes - totalRead);
+        if (got == 0) break;
+        totalRead += got;
+      }
+      if (totalRead != readBytes) break;
+
+      int16_t* samples = reinterpret_cast<int16_t*>(vs067Scratch);
+      if (sourceHeader.numChannels == 2 && sourceRatio == 3) {
+        for (size_t g = 0; g < groups; ++g) {
+          const size_t b = g * 6;
+          const int32_t sum =
+              static_cast<int32_t>(samples[b]) + samples[b + 1] + samples[b + 2] +
+              samples[b + 3] + samples[b + 4] + samples[b + 5];
+          samples[g] = static_cast<int16_t>(sum / 6);
+        }
+      } else {
+        for (size_t g = 0; g < groups; ++g) {
+          int32_t sum = 0;
+          const size_t base = g * samplesPerOutput;
+          for (size_t s = 0; s < samplesPerOutput; ++s) sum += samples[base + s];
+          samples[g] =
+              static_cast<int16_t>(sum / static_cast<int32_t>(samplesPerOutput));
+        }
+      }
+
+      const size_t outBytes = groups * sizeof(int16_t);
+      if (!vsUsbWriteAll(reinterpret_cast<uint8_t*>(samples), outBytes)) break;
+
+      sent += outBytes;
+      outputBytesRemaining -= outBytes;
+    }
+    wav.close();
+  }
+
+  Serial.flush();
+  Serial.printf("\nVSUSB ENDDATA %lu\n", (unsigned long)sent);
+  Serial.flush();
 }
 
 static void vsUsbReplySessionKey(const String& uuid) {
@@ -287,6 +506,23 @@ static void vsUsbHandleCommand(String line) {
       return;
     }
     Serial.printf("VSUSB OK MARK %s\n", prefix.c_str());
+    return;
+  }
+
+  if (line.startsWith("VSUSB READSPEECH ")) {
+    String rest = line.substring(strlen("VSUSB READSPEECH "));
+    const int s1 = rest.indexOf(' ');
+    const int s2 = s1 >= 0 ? rest.indexOf(' ', s1 + 1) : -1;
+    if (s1 <= 0 || s2 <= s1) {
+      Serial.println("VSUSB ERROR READSPEECH_ARGS");
+      return;
+    }
+    const String path = rest.substring(0, s1);
+    const uint32_t offset = static_cast<uint32_t>(
+        strtoul(rest.substring(s1 + 1, s2).c_str(), nullptr, 10));
+    const uint32_t length = static_cast<uint32_t>(
+        strtoul(rest.substring(s2 + 1).c_str(), nullptr, 10));
+    vsUsbReadSpeech(path, offset, length);
     return;
   }
 
