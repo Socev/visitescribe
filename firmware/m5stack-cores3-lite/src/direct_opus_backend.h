@@ -317,6 +317,8 @@ static void vsDoAppendChunkMeta(uint32_t sequence,
   vsDirectOpusUnlockSd();
 }
 
+static bool vsDoEncodeTailPacket();
+
 static bool vsDoOpenChunk() {
   ++vsDoChunkSequence;
   vsDoOggSerial =
