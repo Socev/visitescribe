@@ -988,6 +988,10 @@ static bool vsPutChunk(const VsLocalSession& session, const VsChunkMeta& meta) {
 }
 
 
+static bool vsNeedSequence(
+    uint32_t sequence,
+    const std::vector<uint32_t>* missing);
+
 #ifdef VISITESCRIBE_DIRECT_OPUS
 static bool vsFillDirectOpusCryptoMeta(
     const uint8_t sessionKey[32],
