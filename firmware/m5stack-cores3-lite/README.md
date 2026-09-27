@@ -150,3 +150,79 @@ direct touch controller is not polled. M5Unified's duplicate touch polling is
 also disabled because this firmware owns the FT6336 input path directly.
 Battery polling outside STATUS is reduced to once per minute. Wi-Fi remains off
 unless sync is explicitly requested.
+
+
+## Direct Ogg/Opus recorder test
+
+The `cores3-lite-direct-opus` environment is an experimental recorder backend
+that deliberately writes **no WAV master**. It keeps the same pocket-first PWR
+UI, but the audio path is:
+
+```text
+ES7210 48 kHz stereo
+  -> stream downmix + 3:1 decimation
+  -> 16 kHz mono PCM16, 20 ms
+  -> Espressif Opus 24 kbit/s VBR / VOIP
+  -> self-contained Ogg/Opus chunks <= 30 s on microSD
+```
+
+Each completed file is named:
+
+```text
+/visitescribe/s00029_chunk_000001.opus
+/visitescribe/s00029_chunk_000002.opus
+...
+```
+
+and `s00029_opus.csv` records sequence, path, exact source duration and file
+size. A patient boundary closes the current logical recording segment and the
+next Opus chunk sequence continues. Meeting markers remain events only.
+
+The encoder runs at low priority on core 0; the M5 microphone task is pinned to
+core 0 at higher priority so capture wins scheduling conflicts. A 24-frame
+(480 ms) PCM queue absorbs short encoder/SD stalls. Any queue overflow is
+reported as a dropped frame and makes the recording fail validation rather than
+being silently accepted.
+
+Every Ogg chunk has its own OpusHead/OpusTags, CRCs, stream serial and EOS.
+The backend uses the normal libopus 312-sample 48 kHz pre-skip and an extra
+encoder-drain packet so the final Ogg granule trims to the exact number of real
+16 kHz input samples.
+
+### Build / flash
+
+From the local clone:
+
+```powershell
+cd C:\Projects\visitescribe
+py -m platformio run -d firmware\m5stack-cores3-lite -e cores3-lite-direct-opus -t upload
+```
+
+The first build downloads the pinned Espressif `esp_audio_codec` 2.5.0
+component.
+
+### Expected serial evidence
+
+During a recording the important lines are:
+
+```text
+DIRECT OPUS: worker READY ...
+DIRECT OPUS: chunk 1 OPEN ...
+DIRECT OPUS: frames=500 ... dropped=0
+DIRECT OPUS: chunk 1 CLOSE frames=1500 duration=30000ms ... ok=1
+...
+DIRECT OPUS: worker DONE failed=0 ... dropped=0
+```
+
+A test is not considered successful if `dropped` is non-zero, a chunk closes
+with `ok=0`, or the worker reports `failed=1`.
+
+### USB / API path
+
+Direct-Opus firmware advertises completed chunks with `VSUSB OPUS`. The PC
+sync app downloads those small Ogg files directly, encrypts the exact bytes
+into its normal durable v4 retry spool, and uploads them without ffmpeg or PCM
+conversion. The existing v4 API contract already accepts this format.
+
+Keep `cores3-lite-demo` as the proven WAV rollback build until direct Opus has
+passed real hardware recording and server deep validation.
