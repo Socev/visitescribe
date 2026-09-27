@@ -46,11 +46,11 @@ static constexpr UBaseType_t VS_DO_WORKER_PRIORITY = 1;
 static constexpr BaseType_t VS_DO_MIC_CORE = 0;
 static constexpr uint8_t VS_DO_MIC_PRIORITY = 4;
 
-// We deliberately use pre-skip 0 for the first hardware proof. The Ogg granule
-// clock therefore maps exactly to the number of 16 kHz input samples consumed.
-// The server's structural and deep validation will be the authority on whether
-// the Espressif wrapper's decoder delay requires a non-zero value.
-static constexpr uint16_t VS_DO_PRE_SKIP = 0;
+// libopus' normal algorithmic look-ahead is 312 samples on the mandatory
+// 48 kHz Ogg granule clock (104 samples at our 16 kHz encoder input). Each
+// chunk is therefore flushed with one extra zero-input Opus packet and its
+// final granule trims that packet back to exactly the real input duration.
+static constexpr uint16_t VS_DO_PRE_SKIP = 312;
 
 struct VsDoQueueItem {
   uint8_t kind = 0;  // 0 = audio, 1 = stop
@@ -377,7 +377,8 @@ static bool vsDoFinalizeChunk() {
 
   bool ok = true;
   if (vsDoChunkFrames > 0) {
-    ok = vsDoFlushAudioPage(true);
+    if (!vsDoEncodeTailPacket()) ok = false;
+    if (ok) ok = vsDoFlushAudioPage(true);
   }
 
   uint32_t physical = 0;
@@ -413,6 +414,49 @@ static bool vsDoFinalizeChunk() {
   vsDoChunkFrames = 0;
   vsDoPagePacketCount = 0;
   return ok;
+}
+
+static bool vsDoEncodeTailPacket() {
+  if (!vsDoEncoder || vsDoChunkFrames == 0) return true;
+
+  static const int16_t silence[VS_DO_FRAME_SAMPLES] = {0};
+  uint8_t packet[VS_DO_MAX_PACKET] = {0};
+
+  esp_audio_enc_in_frame_t input = {};
+  input.buffer = reinterpret_cast<uint8_t*>(
+      const_cast<int16_t*>(silence));
+  input.len = VS_DO_FRAME_SAMPLES * sizeof(int16_t);
+
+  esp_audio_enc_out_frame_t output = {};
+  output.buffer = packet;
+  output.len = sizeof(packet);
+  output.encoded_bytes = 0;
+
+  const esp_audio_err_t rc =
+      esp_opus_enc_process(vsDoEncoder, &input, &output);
+  if (rc != ESP_AUDIO_ERR_OK ||
+      output.encoded_bytes <= 0 ||
+      output.encoded_bytes > static_cast<int>(VS_DO_MAX_PACKET)) {
+    Serial.printf("DIRECT OPUS: tail encode FAIL rc=%d bytes=%d\n",
+                  (int)rc, output.encoded_bytes);
+    return false;
+  }
+
+  if (vsDoPagePacketCount >= VS_DO_PACKETS_PER_PAGE) {
+    if (!vsDoFlushAudioPage(false)) return false;
+  }
+
+  const uint8_t slot = vsDoPagePacketCount++;
+  memcpy(vsDoPagePacketData[slot], packet, output.encoded_bytes);
+  vsDoPagePacketLen[slot] = static_cast<uint16_t>(output.encoded_bytes);
+  vsDoEncodedBytes += static_cast<uint32_t>(output.encoded_bytes);
+
+  // This is an encoder-drain packet, not additional source audio. The final
+  // Ogg granule trims its tail so decoded duration remains exactly the number
+  // of real 20 ms input frames.
+  vsDoPageGranule =
+      VS_DO_PRE_SKIP + vsDoChunkFrames * VS_DO_GRANULE_PER_FRAME;
+  return true;
 }
 
 static bool vsDoEncodeFrame(const int16_t pcm[VS_DO_FRAME_SAMPLES]) {
