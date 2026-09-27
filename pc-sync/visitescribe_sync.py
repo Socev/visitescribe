@@ -1509,49 +1509,106 @@ class SyncApp:
             with tempfile.TemporaryDirectory(prefix=f"visitescribe-{s.prefix}-") as td:
                 temp = Path(td)
 
-                # New recorder firmware can expose a virtual 16 kHz mono WAV
-                # generated on-the-fly from the 48 kHz stereo master. Prefer
-                # that 1/6-size USB representation, while keeping raw-WAV
-                # fallback for older firmware and other recorder variants.
-                fast_speech = (
-                    len(s.speech_wavs) == len(s.wavs) and len(s.wavs) > 0
-                )
-                transfer_wavs = s.speech_wavs if fast_speech else s.wavs
-                if fast_speech:
-                    raw_bytes = sum(w.size for w in s.wavs)
-                    speech_bytes = sum(w.size for w in transfer_wavs)
+                direct_opus = bool(s.opus_chunks)
+
+                if direct_opus:
+                    transfer_bytes = sum(x.size for x in s.opus_chunks)
                     self.log(
-                        f"{s.prefix}: snelle USB-route 16k mono "
-                        f"({raw_bytes / 1024 / 1024:.1f} -> "
-                        f"{speech_bytes / 1024 / 1024:.1f} MB over USB)"
+                        f"{s.prefix}: recorder-native Ogg/Opus: "
+                        f"{len(s.opus_chunks)} chunks, "
+                        f"{transfer_bytes / 1024 / 1024:.2f} MB over USB; "
+                        "geen PCM-transfer en geen PC-encode"
                     )
+                    total_download = (
+                        (s.events.size if s.events else 0) + transfer_bytes
+                    )
+                    downloaded_before = 0
+                    local_opus: list[tuple[RemoteFile, Path]] = []
 
-                total_download = (s.events.size if s.events else 0) + sum(
-                    w.size for w in transfer_wavs
-                )
-                downloaded_before = 0
+                    for remote in sorted(
+                        s.opus_chunks, key=lambda x: x.sequence
+                    ):
+                        local = temp / f"chunk-{remote.sequence:06d}.opus"
 
-                local_wavs: list[Path] = []
-                for wi, remote_wav in enumerate(transfer_wavs):
-                    local = temp / f"audio-{wi:03d}.wav"
+                        def opus_progress(
+                            done: int,
+                            total: int,
+                            base=downloaded_before,
+                        ):
+                            fraction = (
+                                (base + done) / total_download
+                                if total_download else 1.0
+                            )
+                            self.set_progress(
+                                fraction,
+                                f"{s.prefix}: M5 Opus {100*fraction:.0f}%",
+                            )
 
-                    def wav_progress(done: int, total: int, base=downloaded_before):
-                        fraction = (base + done) / total_download if total_download else 1.0
-                        self.set_progress(
-                            fraction,
-                            f"{s.prefix}: audio van M5 {100*fraction:.0f}%",
+                        device.read_file(remote, local, opus_progress)
+                        downloaded_before += remote.size
+                        local_opus.append((remote, local))
+
+                    local_wavs: list[Path] = []
+                else:
+                    # WAV recorders may expose a virtual 16 kHz mono WAV
+                    # generated on-the-fly from the 48 kHz stereo master.
+                    fast_speech = (
+                        len(s.speech_wavs) == len(s.wavs) and len(s.wavs) > 0
+                    )
+                    transfer_wavs = s.speech_wavs if fast_speech else s.wavs
+                    if fast_speech:
+                        raw_bytes = sum(w.size for w in s.wavs)
+                        speech_bytes = sum(w.size for w in transfer_wavs)
+                        self.log(
+                            f"{s.prefix}: snelle USB-route 16k mono "
+                            f"({raw_bytes / 1024 / 1024:.1f} -> "
+                            f"{speech_bytes / 1024 / 1024:.1f} MB over USB)"
                         )
 
-                    device.read_file(remote_wav, local, wav_progress)
-                    downloaded_before += remote_wav.size
-                    local_wavs.append(local)
+                    total_download = (
+                        (s.events.size if s.events else 0)
+                        + sum(w.size for w in transfer_wavs)
+                    )
+                    downloaded_before = 0
+                    local_wavs = []
+
+                    for wi, remote_wav in enumerate(transfer_wavs):
+                        local = temp / f"audio-{wi:03d}.wav"
+
+                        def wav_progress(
+                            done: int,
+                            total: int,
+                            base=downloaded_before,
+                        ):
+                            fraction = (
+                                (base + done) / total_download
+                                if total_download else 1.0
+                            )
+                            self.set_progress(
+                                fraction,
+                                f"{s.prefix}: audio van M5 "
+                                f"{100*fraction:.0f}%",
+                            )
+
+                        device.read_file(remote_wav, local, wav_progress)
+                        downloaded_before += remote_wav.size
+                        local_wavs.append(local)
+
+                    local_opus = []
 
                 if s.events is None:
                     raise RuntimeError(f"{s.prefix}: eventsbestand ontbreekt")
                 events_local = temp / "events.csv"
 
-                def event_progress(done: int, total: int, base=downloaded_before):
-                    fraction = (base + done) / total_download if total_download else 1.0
+                def event_progress(
+                    done: int,
+                    total: int,
+                    base=downloaded_before,
+                ):
+                    fraction = (
+                        (base + done) / total_download
+                        if total_download else 1.0
+                    )
                     self.set_progress(
                         fraction,
                         f"{s.prefix}: bestanden van M5 {100*fraction:.0f}%",
@@ -1559,16 +1616,23 @@ class SyncApp:
 
                 device.read_file(s.events, events_local, event_progress)
                 key = device.session_key(s.uuid)
-                try:
-                    api.sync(s, local_wavs, events_local, key)
-                except ExistingSessionNeedsV3 as exc:
-                    self.log(str(exc))
-                    self.post(
-                        "status",
-                        f"{s.prefix} overgeslagen",
-                        "Bestaande v3-sessie: eenmalig via M5 Wi-Fi afmaken.",
+
+                if direct_opus:
+                    api.sync_preencoded_opus(
+                        s, local_opus, events_local, key
                     )
-                    continue
+                else:
+                    try:
+                        api.sync(s, local_wavs, events_local, key)
+                    except ExistingSessionNeedsV3 as exc:
+                        self.log(str(exc))
+                        self.post(
+                            "status",
+                            f"{s.prefix} overgeslagen",
+                            "Bestaande v3-sessie: eenmalig via M5 Wi-Fi afmaken.",
+                        )
+                        continue
+
                 device.mark_ingested(s.prefix, s.uuid)
 
             self.log(f"{s.prefix}: lokaal op M5 gemarkeerd als ingested")
