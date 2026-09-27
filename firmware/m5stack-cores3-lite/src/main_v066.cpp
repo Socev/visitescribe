@@ -71,6 +71,10 @@ struct VsLocalSession {
   String uuid;
   String mode;
   std::vector<String> wavs;
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  std::vector<VsDirectOpusChunkInfo> opus;
+  bool directOpus = false;
+#endif
 };
 
 struct VsChunkMeta {
@@ -350,34 +354,63 @@ static std::vector<String> vsPendingPrefixes() {
   std::vector<String> prefixes;
   File dir = SD.open("/visitescribe");
   if (!dir) return prefixes;
+
   for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
     if (!f.isDirectory()) {
       String base = vsBaseName(f.name());
-      if (base.startsWith("s") && base.endsWith("_events.csv") && base.length() >= 6) {
-        String prefix = base.substring(0, 6);
-        String eventsPath = String("/visitescribe/") + base;
+      if (base.startsWith("s") &&
+          base.endsWith("_events.csv") &&
+          base.length() >= 6) {
+        const String prefix = base.substring(0, 6);
+        const String eventsPath = String("/visitescribe/") + base;
         String uuid, st;
-        bool hasMeta = vsReadSyncMeta(prefix, uuid, st);
-        if ((!hasMeta || st != "ingested") && vsEventsShowComplete(eventsPath)) {
-          auto wavs = vsCollectWavs(prefix);
-          if (!wavs.empty()) prefixes.push_back(prefix);
+        const bool hasMeta = vsReadSyncMeta(prefix, uuid, st);
+
+        if ((!hasMeta || st != "ingested") &&
+            vsEventsShowComplete(eventsPath)) {
+          bool hasAudio = !vsCollectWavs(prefix).empty();
+#ifdef VISITESCRIBE_DIRECT_OPUS
+          if (!hasAudio) {
+            hasAudio = !vsDirectOpusChunksForPrefix(prefix).empty();
+          }
+#endif
+          if (hasAudio) prefixes.push_back(prefix);
         }
       }
     }
     f.close();
   }
   dir.close();
-  std::sort(prefixes.begin(), prefixes.end(), [](const String& a, const String& b) { return a.compareTo(b) < 0; });
-  prefixes.erase(std::unique(prefixes.begin(), prefixes.end(), [](const String& a, const String& b) { return a == b; }), prefixes.end());
+
+  std::sort(
+      prefixes.begin(), prefixes.end(),
+      [](const String& a, const String& b) { return a.compareTo(b) < 0; });
+  prefixes.erase(
+      std::unique(
+          prefixes.begin(), prefixes.end(),
+          [](const String& a, const String& b) { return a == b; }),
+      prefixes.end());
   return prefixes;
 }
 
 static bool vsLoadLocalSession(const String& prefix, VsLocalSession& out) {
+  out = VsLocalSession();
   out.prefix = prefix;
   out.eventsPath = String("/visitescribe/") + prefix + "_events.csv";
-  out.wavs = vsCollectWavs(prefix);
-  if (out.wavs.empty()) return false;
-  out.mode = vsModeFromWavs(out.wavs);
+
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  out.opus = vsDirectOpusChunksForPrefix(prefix);
+  if (!out.opus.empty()) {
+    out.directOpus = true;
+    out.mode = vsDirectOpusModeFromEvents(out.eventsPath);
+  } else
+#endif
+  {
+    out.wavs = vsCollectWavs(prefix);
+    if (out.wavs.empty()) return false;
+    out.mode = vsModeFromWavs(out.wavs);
+  }
+
   String st;
   if (!vsEnsureSessionUuid(prefix, out.uuid, st)) return false;
   return st != "ingested";
