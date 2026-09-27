@@ -898,6 +898,138 @@ def build_v4_spool(
     return manifest, prepared
 
 
+
+def build_v4_spool_from_opus(
+    session: UsbSession,
+    info: DeviceInfo,
+    opus_files: list[tuple[RemoteFile, Path]],
+    session_key: bytes,
+    server_key_id: str,
+    server_public_pem: bytes,
+    log: Callable[[str], None],
+    progress: Callable[[float, str], None],
+) -> tuple[dict, list[OpusPreparedChunk]]:
+    """Encrypt recorder-native Ogg/Opus without re-encoding it.
+
+    Direct-Opus firmware already wrote the final API plaintext. The PC only
+    creates the durable encrypted retry spool; this preserves the recorder's
+    exact Ogg bytes across retries and avoids ffmpeg entirely.
+    """
+    existing = load_v4_spool(session.uuid)
+    if existing:
+        log(f"{session.prefix}: bestaande directe v4 spool hergebruikt")
+        return existing
+
+    ordered = sorted(opus_files, key=lambda item: item[0].sequence)
+    if not ordered:
+        raise RuntimeError(f"{session.prefix}: geen directe Opus chunks")
+
+    sequences = [remote.sequence for remote, _ in ordered]
+    if sequences != list(range(1, len(sequences) + 1)):
+        raise RuntimeError(
+            f"{session.prefix}: Opus chunknummers zijn niet aaneengesloten: "
+            f"{sequences}"
+        )
+
+    root = SPOOL_ROOT / session.uuid
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    wrapped = wrap_session_key(session_key, server_public_pem)
+    prepared: list[OpusPreparedChunk] = []
+    manifest_chunks: list[dict] = []
+    offset_ms = 0
+
+    for index, (remote, path) in enumerate(ordered, 1):
+        progress(
+            (index - 1) / len(ordered),
+            f"{session.prefix}: directe Opus {index}/{len(ordered)} beveiligen",
+        )
+        opus_plain = path.read_bytes()
+        if len(opus_plain) != remote.size:
+            raise RuntimeError(
+                f"{path.name}: verwacht {remote.size} bytes, kreeg {len(opus_plain)}"
+            )
+        if not opus_plain.startswith(b"OggS") or b"OpusHead" not in opus_plain[:512]:
+            raise RuntimeError(
+                f"{path.name}: recorder leverde geen herkenbare Ogg/Opus chunk"
+            )
+        if remote.duration_ms <= 0 or remote.duration_ms > SYNC_CHUNK_SECONDS * 1000:
+            raise RuntimeError(
+                f"{path.name}: ongeldige chunkduur {remote.duration_ms} ms"
+            )
+
+        nonce, aad = v4_nonce_and_aad(
+            session_key, session.uuid, remote.sequence
+        )
+        ciphertext = AESGCM(session_key).encrypt(
+            nonce, opus_plain, aad.encode("ascii")
+        )
+
+        out_path = root / f"chunk-{remote.sequence:06d}.opus.enc"
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp_path.write_bytes(ciphertext)
+        tmp_path.replace(out_path)
+
+        item = {
+            "sequence": remote.sequence,
+            "file": f"audio/chunk-{remote.sequence:06d}.opus.enc",
+            "nonce_b64": base64.b64encode(nonce).decode("ascii"),
+            "aad": aad,
+            "plaintext_sha256": hashlib.sha256(opus_plain).hexdigest(),
+            "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),
+            "plaintext_size": len(opus_plain),
+            "ciphertext_size": len(ciphertext),
+            "start_offset_ms": offset_ms,
+            "duration_ms": remote.duration_ms,
+        }
+        manifest_chunks.append(item)
+        prepared.append(_manifest_chunk_to_prepared(root, item))
+        offset_ms += remote.duration_ms
+
+    manifest = {
+        "schema_version": 2,
+        "session_id": session.uuid,
+        "device_id": info.device_id,
+        "mode": session.mode,
+        "status": "complete",
+        "audio": {
+            "codec": "opus",
+            "container": "ogg",
+            "sample_rate": SPEECH_RATE,
+            "channels": 1,
+            "sample_format": "opus",
+            "chunk_seconds": SYNC_CHUNK_SECONDS,
+            "bitrate": OPUS_BITRATE,
+            "frame_ms": OPUS_FRAME_MS,
+        },
+        "encryption": {
+            "algorithm": "AES-256-GCM",
+            "local_key_wrap": None,
+            "server_key_wrap": {
+                "algorithm": "RSA-OAEP-SHA256",
+                "key_id": server_key_id,
+                "ciphertext_b64": wrapped,
+            },
+        },
+        "chunks": manifest_chunks,
+    }
+
+    manifest_tmp = root / "manifest.json.tmp"
+    manifest_tmp.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    manifest_tmp.replace(root / "manifest.json")
+
+    total = sum(item.ciphertext_size for item in prepared)
+    log(
+        f"{session.prefix}: M5 leverde {len(prepared)} kant-en-klare "
+        f"Ogg/Opus chunks, {total / 1024 / 1024:.2f} MB encrypted wire-data"
+    )
+    return manifest, prepared
+
 def delete_v4_spool(
     uuid: str,
     log: Callable[[str], None] | None = None,
@@ -1157,6 +1289,50 @@ class ApiSync:
             f"{wire_bytes / 1024 / 1024:.2f} MB, uploadfase {elapsed:.1f}s"
         )
         delete_v4_spool(session.uuid, self.log)
+
+    def sync_preencoded_opus(
+        self,
+        session: UsbSession,
+        opus_files: list[tuple[RemoteFile, Path]],
+        events_path: Path,
+        session_key: bytes,
+    ) -> None:
+        """Sync recorder-native Ogg/Opus chunks without transcoding."""
+
+        exists, remote = self.probe_status(session.uuid)
+        if exists and remote and confirmed(remote):
+            self.log(f"{session.prefix}: server had sessie al compleet")
+            delete_v4_spool(session.uuid, self.log)
+            return
+
+        manifest, prepared = build_v4_spool_from_opus(
+            session,
+            self.info,
+            opus_files,
+            session_key,
+            self.server_key_id,
+            self.server_public_pem,
+            self.log,
+            self.progress,
+        )
+
+        if exists:
+            self.log(
+                f"{session.prefix}: bestaande directe v4 sessie hervatten "
+                "vanaf recorder-Opus"
+            )
+            self._upload_v4(
+                session, manifest, prepared, events_path, create_session=False
+            )
+            return
+
+        self.log(
+            f"{session.prefix}: nieuwe sessie -> directe M5 Ogg/Opus "
+            "16k mono 24 kbit/s (geen PC-encode)"
+        )
+        self._upload_v4(
+            session, manifest, prepared, events_path, create_session=True
+        )
 
     def sync(
         self,
