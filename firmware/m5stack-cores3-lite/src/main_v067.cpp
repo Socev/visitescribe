@@ -1112,6 +1112,15 @@ static bool vs067UploadLegacyChunks(const VsLocalSession& session,
 
 static bool vs067SyncOne(const VsLocalSession& session,
                          const String& serverKeyId, const String& serverPublicPem) {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (session.directOpus) {
+    Serial.printf(
+        "SERVER: %s uses recorder-native direct Ogg/Opus (%u chunks)\n",
+        session.prefix.c_str(), (unsigned)session.opus.size());
+    return vsSyncDirectOpus(session, serverKeyId, serverPublicPem);
+  }
+#endif
+
   const uint32_t sessionStarted = millis();
   vsServerSessionPrefix = session.prefix;
   vsServerChunkCurrent = vsServerChunkTotal = 0;
@@ -1204,6 +1213,11 @@ static bool vs067SyncAllPending() {
   if (!vsEnsureDeviceRootKey()) return vsFail("Device root key niet beschikbaar");
 
   const auto prefixes = vsPendingPrefixes();
+  Serial.printf("SERVER: pending queue count=%u", (unsigned)prefixes.size());
+  for (const auto& prefix : prefixes) {
+    Serial.printf(" %s", prefix.c_str());
+  }
+  Serial.println();
   vsServerSessionsTotal = prefixes.size();
   vsServerSessionsDone = 0;
   vsServerSessionsSkipped = 0;
@@ -1222,19 +1236,40 @@ static bool vs067SyncAllPending() {
       return vsFail(String("Lokale sessie fout: ") + prefix);
     }
 
-    // A damaged/empty local recording must never block later consultations.
-    // Keep every local file and sync marker untouched so it remains available
-    // for manual recovery, but skip it for this automatic queue.
-    const uint32_t localSpeechChunks = vsCountChunks(local, false);
-    if (localSpeechChunks == 0) {
-      ++vsServerSessionsSkipped;
-      vsServerSessionPrefix = local.prefix;
-      vsServerChunkCurrent = vsServerChunkTotal = 0;
-      Serial.printf(
-          "SERVER: SKIP session %s: no valid 16k speech chunks; local files retained\n",
-          local.prefix.c_str());
-      vsSetStage(VsServerStage::PREPARE, "OVERGESLAGEN - lokale audio ongeldig");
-      continue;
+    // A damaged/empty old WAV recording must never block later
+    // consultations forever. Direct-Opus sessions already passed their own
+    // contiguous metadata check in vsLoadLocalSession().
+#ifdef VISITESCRIBE_DIRECT_OPUS
+    const bool needsLegacyChunkCheck = !local.directOpus;
+#else
+    const bool needsLegacyChunkCheck = true;
+#endif
+    if (needsLegacyChunkCheck) {
+      const uint32_t localSpeechChunks = vsCountChunks(local, false);
+      if (localSpeechChunks == 0) {
+        ++vsServerSessionsSkipped;
+        vsServerSessionPrefix = local.prefix;
+        vsServerChunkCurrent = vsServerChunkTotal = 0;
+
+        // Preserve every local file, but quarantine this completed zero-audio
+        // session so the same historical number no longer appears on every
+        // automatic sync. Removing its _sync.txt manually makes it retryable.
+        if (!vsWriteSyncMeta(
+                local.prefix, local.uuid, "quarantined_no_audio")) {
+          return vsFail(
+              String("Kon zero-audio sessie niet quarantaine-markeren: ") +
+              local.prefix);
+        }
+
+        Serial.printf(
+            "SERVER: QUARANTINE session %s: no valid 16k speech chunks; "
+            "local files retained, automatic retries disabled\n",
+            local.prefix.c_str());
+        vsSetStage(
+            VsServerStage::PREPARE,
+            "QUARANTAINE - geen geldige audio");
+        continue;
+      }
     }
 
     if (!vs067SyncOne(local, serverKeyId, serverPublicPem)) return false;
