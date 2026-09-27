@@ -73,7 +73,6 @@ void initVariant() {
 
 #include "main_v067.cpp"
 #include "main_v069_probe.cpp"
-#include "main_v072_lan_benchmark.cpp"
 
 // The old Arduino Opus benchmark and the Espressif load probe intentionally
 // share the existing OPUS TEST menu label, but never compile into the same
