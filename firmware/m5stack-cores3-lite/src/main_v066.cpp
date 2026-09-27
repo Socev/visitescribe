@@ -187,8 +187,14 @@ static void vsDrawServerSync(bool force = false) {
     if (m.length() > 45) m = m.substring(0, 45);
     if (m.length()) centeredText(158, m.c_str(), C_GREY, 1);
   }
-  zone(SYNC_RETRY, "OPNIEUW", C_TEAL, C_WHITE);
-  zone(SYNC_BACK, "TERUG", C_NAVY, C_WHITE);
+  if (vsServerSyncRunning) {
+    M5.Display.fillRect(0, 190, SCREEN_W, 50, C_NAVY);
+    centeredText(206, "SYNC LOOPT", C_WHITE, 2);
+    centeredText(227, "touch tijdelijk uit", C_WHITE, 1);
+  } else {
+    zone(SYNC_RETRY, "OPNIEUW", C_TEAL, C_WHITE);
+    zone(SYNC_BACK, "TERUG", C_NAVY, C_WHITE);
+  }
 }
 
 static void vsSetStage(VsServerStage stage, const String& message = String()) {
@@ -429,7 +435,7 @@ static bool vsLoadLocalSession(const String& prefix, VsLocalSession& out) {
 
   String st;
   if (!vsEnsureSessionUuid(prefix, out.uuid, st)) return false;
-  return st != "ingested";
+  return !vsLocalSyncStateTerminal(st);
 }
 
 static bool vsReadWavHeader(File& f, WAVHeader& h) {
