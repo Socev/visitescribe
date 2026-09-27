@@ -108,7 +108,167 @@ static void vsUsbReplyInfo() {
                 tokenB64.c_str());
 }
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+struct VsUsbDirectOpusRow {
+  uint32_t sequence = 0;
+  String path;
+  uint32_t durationMs = 0;
+  uint32_t bytes = 0;
+};
+
+static std::vector<VsUsbDirectOpusRow> vsUsbDirectOpusRows(const String& prefix) {
+  std::vector<VsUsbDirectOpusRow> rows;
+  const String metaPath = String("/visitescribe/") + prefix + "_opus.csv";
+  File meta = SD.open(metaPath, FILE_READ);
+  if (!meta) return rows;
+
+  bool first = true;
+  while (meta.available()) {
+    String line = meta.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+    if (first) {
+      first = false;
+      if (line.startsWith("sequence,")) continue;
+    }
+
+    const int c1 = line.indexOf(',');
+    const int c2 = c1 >= 0 ? line.indexOf(',', c1 + 1) : -1;
+    const int c3 = c2 >= 0 ? line.indexOf(',', c2 + 1) : -1;
+    if (c1 <= 0 || c2 <= c1 || c3 <= c2) continue;
+
+    VsUsbDirectOpusRow row;
+    row.sequence = static_cast<uint32_t>(line.substring(0, c1).toInt());
+    row.path = line.substring(c1 + 1, c2);
+    row.durationMs = static_cast<uint32_t>(
+        line.substring(c2 + 1, c3).toInt());
+    row.bytes = static_cast<uint32_t>(line.substring(c3 + 1).toInt());
+
+    if (!row.sequence || !row.durationMs || !vsUsbSafePath(row.path)) continue;
+    File opus = SD.open(row.path, FILE_READ);
+    if (!opus) continue;
+    row.bytes = static_cast<uint32_t>(opus.size());
+    opus.close();
+    if (row.bytes) rows.push_back(row);
+  }
+  meta.close();
+
+  std::sort(rows.begin(), rows.end(),
+            [](const VsUsbDirectOpusRow& a, const VsUsbDirectOpusRow& b) {
+              return a.sequence < b.sequence;
+            });
+  return rows;
+}
+
+static String vsUsbDirectMode(const String& eventsPath) {
+  File events = SD.open(eventsPath, FILE_READ);
+  if (!events) return "single_patient";
+
+  bool meeting = false;
+  bool patientBoundary = false;
+  while (events.available()) {
+    String line = events.readStringUntil('\n');
+    if (line.indexOf(",mode_selected_meeting,") >= 0) meeting = true;
+    if (line.indexOf(",patient_boundary,") >= 0) patientBoundary = true;
+  }
+  events.close();
+
+  if (meeting) return "meeting";
+  if (patientBoundary) return "multi_patient";
+  return "single_patient";
+}
+
+static std::vector<String> vsUsbDirectPendingPrefixes() {
+  std::vector<String> prefixes;
+  File dir = SD.open("/visitescribe");
+  if (!dir) return prefixes;
+
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    if (!f.isDirectory()) {
+      String base = vsBaseName(f.name());
+      if (base.startsWith("s") &&
+          base.endsWith("_events.csv") &&
+          base.length() >= 6) {
+        const String prefix = base.substring(0, 6);
+        const String eventsPath = String("/visitescribe/") + base;
+        String uuid, syncState;
+        const bool hasMeta = vsReadSyncMeta(prefix, uuid, syncState);
+        if ((!hasMeta || syncState != "ingested") &&
+            vsEventsShowComplete(eventsPath)) {
+          const auto opus = vsUsbDirectOpusRows(prefix);
+          if (!opus.empty()) prefixes.push_back(prefix);
+        }
+      }
+    }
+    f.close();
+  }
+  dir.close();
+
+  std::sort(prefixes.begin(), prefixes.end(),
+            [](const String& a, const String& b) {
+              return a.compareTo(b) < 0;
+            });
+  prefixes.erase(
+      std::unique(prefixes.begin(), prefixes.end(),
+                  [](const String& a, const String& b) { return a == b; }),
+      prefixes.end());
+  return prefixes;
+}
+
+static void vsUsbReplyDirectOpusList() {
+  Serial.println("VSUSB LISTING START");
+  Serial.flush();
+
+  const auto prefixes = vsUsbDirectPendingPrefixes();
+  Serial.printf("VSUSB LISTING %u\n", (unsigned)prefixes.size());
+  Serial.flush();
+
+  uint32_t listed = 0;
+  for (const auto& prefix : prefixes) {
+    const String eventsPath =
+        String("/visitescribe/") + prefix + "_events.csv";
+    const auto opus = vsUsbDirectOpusRows(prefix);
+    if (opus.empty()) continue;
+
+    String uuid, syncState;
+    if (!vsEnsureSessionUuid(prefix, uuid, syncState)) {
+      Serial.printf("VSUSB SKIP %s NO_UUID\n", prefix.c_str());
+      continue;
+    }
+
+    File events = SD.open(eventsPath, FILE_READ);
+    const uint32_t eventsSize =
+        events ? static_cast<uint32_t>(events.size()) : 0;
+    if (events) events.close();
+
+    const String mode = vsUsbDirectMode(eventsPath);
+    Serial.printf("VSUSB SESSION %s %s %s %u %u\n",
+                  prefix.c_str(), uuid.c_str(), mode.c_str(),
+                  (unsigned)opus.size(), (unsigned)eventsSize);
+    Serial.printf("VSUSB EVENTS %u %s\n",
+                  (unsigned)eventsSize, eventsPath.c_str());
+
+    for (const auto& row : opus) {
+      Serial.printf("VSUSB OPUS %lu %lu %lu %s\n",
+                    (unsigned long)row.sequence,
+                    (unsigned long)row.bytes,
+                    (unsigned long)row.durationMs,
+                    row.path.c_str());
+    }
+    Serial.println("VSUSB ENDSESSION");
+    ++listed;
+  }
+
+  Serial.printf("VSUSB ENDLIST %lu\n", (unsigned long)listed);
+}
+#endif
+
 static void vsUsbReplyList() {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  vsUsbReplyDirectOpusList();
+  return;
+#endif
+
   // LIST may need several seconds on a full/slow SD card. Tell the PC
   // immediately that the recorder is alive before starting directory scans.
   Serial.println("VSUSB LISTING START");
