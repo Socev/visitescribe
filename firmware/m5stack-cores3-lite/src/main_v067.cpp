@@ -193,7 +193,7 @@ static std::vector<String> vsUsbDirectPendingPrefixes() {
         const String eventsPath = String("/visitescribe/") + base;
         String uuid, syncState;
         const bool hasMeta = vsReadSyncMeta(prefix, uuid, syncState);
-        if ((!hasMeta || syncState != "ingested") &&
+        if ((!hasMeta || !vsLocalSyncStateTerminal(syncState)) &&
             vsEventsShowComplete(eventsPath)) {
           const auto opus = vsUsbDirectOpusRows(prefix);
           if (!opus.empty()) prefixes.push_back(prefix);
