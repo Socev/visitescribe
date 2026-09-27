@@ -23,6 +23,8 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
+#include <vector>
+#include <algorithm>
 #include "esp_audio_types.h"
 #include "esp_opus_enc.h"
 
@@ -51,6 +53,93 @@ static constexpr uint8_t VS_DO_MIC_PRIORITY = 4;
 // chunk is therefore flushed with one extra zero-input Opus packet and its
 // final granule trims that packet back to exactly the real input duration.
 static constexpr uint16_t VS_DO_PRE_SKIP = 312;
+
+struct VsDirectOpusChunkInfo {
+  uint32_t sequence = 0;
+  String path;
+  uint32_t durationMs = 0;
+  uint32_t bytes = 0;
+};
+
+static std::vector<VsDirectOpusChunkInfo>
+vsDirectOpusChunksForPrefix(const String& prefix) {
+  std::vector<VsDirectOpusChunkInfo> rows;
+  const String metaPath = String("/visitescribe/") + prefix + "_opus.csv";
+  File meta = SD.open(metaPath, FILE_READ);
+  if (!meta) return rows;
+
+  bool first = true;
+  while (meta.available()) {
+    String line = meta.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    if (first) {
+      first = false;
+      if (line.startsWith("sequence,")) continue;
+    }
+
+    const int c1 = line.indexOf(',');
+    const int c2 = c1 >= 0 ? line.indexOf(',', c1 + 1) : -1;
+    const int c3 = c2 >= 0 ? line.indexOf(',', c2 + 1) : -1;
+    if (c1 <= 0 || c2 <= c1 || c3 <= c2) continue;
+
+    VsDirectOpusChunkInfo row;
+    row.sequence = static_cast<uint32_t>(line.substring(0, c1).toInt());
+    row.path = line.substring(c1 + 1, c2);
+    row.durationMs =
+        static_cast<uint32_t>(line.substring(c2 + 1, c3).toInt());
+    row.bytes = static_cast<uint32_t>(line.substring(c3 + 1).toInt());
+
+    if (!row.sequence || !row.durationMs ||
+        !row.path.startsWith("/visitescribe/") ||
+        row.path.indexOf("..") >= 0) {
+      continue;
+    }
+
+    File opus = SD.open(row.path, FILE_READ);
+    if (!opus) continue;
+    row.bytes = static_cast<uint32_t>(opus.size());
+    opus.close();
+    if (row.bytes) rows.push_back(row);
+  }
+  meta.close();
+
+  std::sort(
+      rows.begin(), rows.end(),
+      [](const VsDirectOpusChunkInfo& a, const VsDirectOpusChunkInfo& b) {
+        return a.sequence < b.sequence;
+      });
+
+  // A missing sequence means the local recording is incomplete/corrupt. Do
+  // not silently renumber it: the v4 manifest/API sequence is part of the
+  // authenticated recording identity.
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].sequence != i + 1) {
+      rows.clear();
+      break;
+    }
+  }
+  return rows;
+}
+
+static String vsDirectOpusModeFromEvents(const String& eventsPath) {
+  File events = SD.open(eventsPath, FILE_READ);
+  if (!events) return "single_patient";
+
+  bool meeting = false;
+  bool patientBoundary = false;
+  while (events.available()) {
+    String line = events.readStringUntil('\n');
+    if (line.indexOf(",mode_selected_meeting,") >= 0) meeting = true;
+    if (line.indexOf(",patient_boundary,") >= 0) patientBoundary = true;
+  }
+  events.close();
+
+  if (meeting) return "meeting";
+  if (patientBoundary) return "multi_patient";
+  return "single_patient";
+}
 
 struct VsDoQueueItem {
   uint8_t kind = 0;  // 0 = audio, 1 = stop
