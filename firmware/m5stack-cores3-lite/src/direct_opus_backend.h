@@ -402,7 +402,13 @@ static bool vsDoFinalizeChunk() {
 
   if (vsDoChunkFrames > 0) {
     const uint32_t durationMs = vsDoChunkFrames * VS_DO_FRAME_MS;
-    vsDoAppendChunkMeta(vsDoChunkSequence, vsDoFinalPath, durationMs, physical);
+    // Never advertise a chunk in the sync sidecar unless the complete Ogg file
+    // was closed and atomically renamed successfully. A failed .tmp remains on
+    // the card for diagnosis/recovery instead of becoming a bogus upload row.
+    if (ok) {
+      vsDoAppendChunkMeta(
+          vsDoChunkSequence, vsDoFinalPath, durationMs, physical);
+    }
     Serial.printf(
         "DIRECT OPUS: chunk %lu CLOSE frames=%lu duration=%lums bytes=%lu ok=%d\n",
         (unsigned long)vsDoChunkSequence,
