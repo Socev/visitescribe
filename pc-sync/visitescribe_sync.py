@@ -57,6 +57,8 @@ class RemoteFile:
     path: str
     size: int
     kind: str = "raw"
+    sequence: int = 0
+    duration_ms: int = 0
 
 
 @dataclass
@@ -67,6 +69,7 @@ class UsbSession:
     events: RemoteFile | None = None
     wavs: list[RemoteFile] = field(default_factory=list)
     speech_wavs: list[RemoteFile] = field(default_factory=list)
+    opus_chunks: list[RemoteFile] = field(default_factory=list)
 
 
 @dataclass
@@ -333,6 +336,22 @@ class VisiteScribeUsb:
                 p = line.split(" ", 3)
                 current.speech_wavs.append(
                     RemoteFile(path=p[3], size=int(p[2]), kind="speech")
+                )
+                continue
+            if line.startswith("VSUSB OPUS "):
+                if current is None:
+                    raise RuntimeError("OPUS buiten SESSION")
+                p = line.split(" ", 5)
+                if len(p) != 6:
+                    raise RuntimeError(f"ongeldige OPUS-regel: {line}")
+                current.opus_chunks.append(
+                    RemoteFile(
+                        path=p[5],
+                        size=int(p[3]),
+                        kind="opus",
+                        sequence=int(p[2]),
+                        duration_ms=int(p[4]),
+                    )
                 )
                 continue
             if line == "VSUSB ENDSESSION":
