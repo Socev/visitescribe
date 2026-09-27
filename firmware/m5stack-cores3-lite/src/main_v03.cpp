@@ -52,6 +52,11 @@ static uint32_t pwrFirstClickMsV03 = 0;
 static void (*vsSyntheticTestHook)() = nullptr;
 static const char* (*vsSyntheticTestStatusHook)() = nullptr;
 
+// Local-network transport benchmark. A later firmware overlay installs the
+// implementation; older builds simply omit the menu action.
+static void (*vsLanBenchmarkHook)() = nullptr;
+static const char* (*vsLanBenchmarkStatusHook)() = nullptr;
+
 static bool readTouchV03(int& x, int& y, int& rawX, int& rawY) {
   rawX = rawY = -1;
   if (!touchOk) return false;
@@ -77,9 +82,14 @@ static void showStorageStatus() {
 static void drawMenuV03() {
   drawHeader("MENU");
 #ifdef VISITESCRIBE_DEMO_UI
-  zone(THREE_TOP, "STATUS", C_BLUE, C_WHITE);
-  zone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "opnames naar server");
-  zone(THREE_BOTTOM, "TERUG", C_NAVY, C_WHITE);
+  // Four rows in the demo build: normal workflow plus an isolated LAN
+  // throughput benchmark that never touches real recordings.
+  zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
+  zone(HOME_ROUND, "SYNC", C_TEAL, C_WHITE, "opnames naar server");
+  const char* lanStatus =
+      vsLanBenchmarkStatusHook ? vsLanBenchmarkStatusHook() : "laptop 192.168.2.31";
+  zone(HOME_MEETING, "LAN TEST", C_AMBER, C_NAVY, lanStatus);
+  zone(HOME_MENU, "TERUG", C_NAVY, C_WHITE);
 #else
   // Four 50 px rows deliberately reuse the home-screen rectangles so no new
   // touch geometry is introduced into the proven base UI.
@@ -97,13 +107,15 @@ static void drawMenuV03() {
 
 static void handleMenuTouchV03(int x, int y) {
 #ifdef VISITESCRIBE_DEMO_UI
-  if (THREE_TOP.contains(x, y)) {
+  if (HOME_VISIT.contains(x, y)) {
     refreshBattery();
     state = AppState::STATUS;
     screenDirty = true;
-  } else if (THREE_MIDDLE.contains(x, y)) {
+  } else if (HOME_ROUND.contains(x, y)) {
     beginSync();
-  } else if (THREE_BOTTOM.contains(x, y)) {
+  } else if (HOME_MEETING.contains(x, y)) {
+    if (vsLanBenchmarkHook) vsLanBenchmarkHook();
+  } else if (HOME_MENU.contains(x, y)) {
     goHome();
   }
 #else
