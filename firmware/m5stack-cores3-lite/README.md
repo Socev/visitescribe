@@ -226,3 +226,38 @@ conversion. The existing v4 API contract already accepts this format.
 
 Keep `cores3-lite-demo` as the proven WAV rollback build until direct Opus has
 passed real hardware recording and server deep validation.
+
+
+## Brian identity and direct-Opus sync
+
+The CoreS3-Lite working name is **Brian** (a play on "Brain"). At boot the
+display briefly uses a white splash screen with the supplied monochrome
+OurMind logo in the upper-right, an animated cartoon robot doctor in the
+centre, and the Brian name before the normal recorder UI appears.
+
+The pocket menu contains only **STATUS / SYNC / TERUG**. The temporary LAN
+benchmark remains in the repository as a development tool but is no longer
+compiled into the normal/direct-Opus M5 build.
+
+For `cores3-lite-direct-opus`, MENU > SYNC now uploads the recorder-native
+Ogg/Opus chunks directly as API v4 audio. It does not look for a WAV master and
+does not transcode the audio again. The recorder:
+
+1. inventories completed `sNNNNN_opus.csv` sessions;
+2. creates the existing v4 Ogg/Opus manifest;
+3. derives the v4 Opus nonce/AAD domain;
+4. AES-GCM encrypts each exact local Ogg chunk;
+5. resumes only server-reported missing chunks when applicable;
+6. posts events, completes the session, verifies durable ingest, and only then
+   marks the local session `ingested`.
+
+The SYNC screen stays awake for the full queue. While HTTP/server sync is
+running, touch is deliberately locked and the footer says **SYNC LOOPT** rather
+than presenting tappable retry/back controls, so an incidental wake/glance tap
+cannot tear down Wi-Fi mid-upload.
+
+Completed legacy sessions that contain no valid audio are retained on SD but
+are marked `quarantined_no_audio` after detection. That makes them terminal
+for automatic queue scans instead of showing the same historical session
+numbers on every sync. Removing that session's `_sync.txt` manually makes it
+eligible for a deliberate retry/recovery attempt.
