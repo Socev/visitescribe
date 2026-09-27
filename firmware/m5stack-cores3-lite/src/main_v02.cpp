@@ -91,6 +91,10 @@ Mode selectedMode = Mode::VISIT;
 SyncPhase syncPhase = SyncPhase::NOT_STARTED;
 DisplayPower displayPower = DisplayPower::ACTIVE;
 
+// Later server-sync layers can lock SYNC touch while network writes are in
+// progress. This prevents an incidental tap from aborting a live upload.
+static bool (*vsSyncTouchLockedHook)() = nullptr;
+
 bool sdOk = false;
 bool touchOk = false;
 bool screenDirty = true;
@@ -812,8 +816,18 @@ void handleTouch(int x, int y) {
       if (STATUS_BACK.contains(x,y)) { state = AppState::MENU; screenDirty = true; }
       break;
     case AppState::SYNC:
+      if (vsSyncTouchLockedHook && vsSyncTouchLockedHook()) {
+        // Upload in progress: touch is informational only. Never let a wake/
+        // glance tap tear down Wi-Fi underneath a server request.
+        break;
+      }
       if (SYNC_RETRY.contains(x,y)) startWifiAttempt(0);
-      else if (SYNC_BACK.contains(x,y)) { wifiOff(); syncPhase = SyncPhase::NOT_STARTED; state = AppState::MENU; screenDirty = true; }
+      else if (SYNC_BACK.contains(x,y)) {
+        wifiOff();
+        syncPhase = SyncPhase::NOT_STARTED;
+        state = AppState::MENU;
+        screenDirty = true;
+      }
       break;
   }
 }
@@ -852,10 +866,10 @@ void serviceInputs() {
 }
 
 void serviceDisplayPower() {
-  if (state == AppState::SYNC &&
-      (syncPhase == SyncPhase::CONNECTING_1 || syncPhase == SyncPhase::CONNECTING_2)) {
-    return;
-  }
+  // Keep the complete sync screen visible. Uploads can run for minutes and the
+  // progress display is useful; dimming previously tempted a wake tap that
+  // could hit TERUG and abort the upload.
+  if (state == AppState::SYNC) return;
 
   // Keep the complete 10-second mode chooser visible.
   if (quickModeChoiceActive) return;
