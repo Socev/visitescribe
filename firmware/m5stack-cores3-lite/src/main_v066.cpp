@@ -115,6 +115,17 @@ static uint32_t vsServerSessionsTotal = 0;
 static uint32_t vsServerLastDrawMs = 0;
 static bool vsServerSyncRunning = false;
 
+static bool vsServerTouchLocked() {
+  return vsServerSyncRunning;
+}
+
+struct VsServerTouchLockInstaller {
+  VsServerTouchLockInstaller() {
+    vsSyncTouchLockedHook = &vsServerTouchLocked;
+  }
+};
+static VsServerTouchLockInstaller vsServerTouchLockInstaller;
+
 static uint8_t vsDeviceRootKey[32] = {0};
 static bool vsDeviceRootKeyReady = false;
 static WiFiClientSecure vsTls;
