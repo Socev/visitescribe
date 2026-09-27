@@ -132,6 +132,10 @@ char wavFinalPath[128] = {0};
 File wavFile;
 uint32_t wavDataBytes = 0;
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+#include "direct_opus_backend.h"
+#endif
+
 struct AudioDone { int16_t* data; size_t samples; };
 QueueHandle_t audioDoneQueue = nullptr;
 
@@ -308,7 +312,13 @@ void drawStatus() {
   centeredText(62, line, batteryPct <= 15 ? C_RED : C_NAVY, 2);
   centeredText(91, sdOk ? "MICROSD  OK" : "MICROSD  FOUT", sdOk ? C_GREEN : C_RED, 2);
   centeredText(120, touchOk ? "TOUCH  FT6336 OK" : "TOUCH  FOUT", touchOk ? C_GREEN : C_RED, 1);
-  snprintf(line, sizeof(line), "AUDIO  %s", audioError ? "FOUT" : "48k stereo gereed");
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  snprintf(line, sizeof(line), "AUDIO  %s",
+           audioError ? "FOUT" : "16k mono Opus direct");
+#else
+  snprintf(line, sizeof(line), "AUDIO  %s",
+           audioError ? "FOUT" : "48k stereo gereed");
+#endif
   centeredText(145, line, audioError ? C_RED : C_NAVY, 1);
   snprintf(line, sizeof(line), "BOARD ID  %d", (int)M5.getBoard());
   centeredText(168, line, C_GREY, 1);
@@ -417,31 +427,52 @@ void makeAudioPaths() {
 }
 
 bool openWavSegment() {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  audioError = false;
+  return vsDirectOpusBeginSegment();
+#else
   makeAudioPaths();
   if (SD.exists(wavTmpPath)) SD.remove(wavTmpPath);
   wavFile = SD.open(wavTmpPath, FILE_WRITE);
   if (!wavFile) return false;
   WAVHeader h;
-  if (wavFile.write(reinterpret_cast<const uint8_t*>(&h), sizeof(h)) != sizeof(h)) { wavFile.close(); return false; }
+  if (wavFile.write(reinterpret_cast<const uint8_t*>(&h), sizeof(h)) != sizeof(h)) {
+    wavFile.close();
+    return false;
+  }
   wavDataBytes = 0;
   audioError = false;
   return true;
+#endif
 }
 
 void finalizeWavSegment() {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (!vsDirectOpusFinishSegment()) audioError = true;
+#else
   if (!wavFile) return;
   writeHeader(wavFile, wavDataBytes);
   wavFile.close();
   if (SD.exists(wavFinalPath)) SD.remove(wavFinalPath);
   if (!SD.rename(wavTmpPath, wavFinalPath)) audioError = true;
+#endif
 }
 
 void logEvent(const char* eventName, uint32_t offsetMs) {
   if (!sdOk || eventsPath[0] == '\0') return;
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (!vsDirectOpusLockSd()) return;
+#endif
   File f = SD.open(eventsPath, FILE_APPEND);
-  if (!f) return;
-  f.printf("%lu,%s,%u,%u,%u,%s\n", (unsigned long)offsetMs, eventName, patientNumber, segmentNumber, markerCount, wavFinalPath);
-  f.close();
+  if (f) {
+    f.printf("%lu,%s,%u,%u,%u,%s\n",
+             (unsigned long)offsetMs, eventName,
+             patientNumber, segmentNumber, markerCount, wavFinalPath);
+    f.close();
+  }
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  vsDirectOpusUnlockSd();
+#endif
 }
 
 void audioReleased(void*, void* data, size_t length) {
@@ -458,28 +489,61 @@ void serviceAudio() {
   if (!audioDoneQueue) return;
   AudioDone done;
   while (xQueueReceive(audioDoneQueue, &done, 0) == pdTRUE) {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+    if (done.data && done.samples) {
+      if (!vsDirectOpusConsumeStereo(done.data, done.samples)) {
+        audioError = true;
+      }
+    }
+#else
     if (wavFile && done.data && done.samples) {
       size_t bytes = done.samples * sizeof(int16_t);
       size_t written = wavFile.write(reinterpret_cast<uint8_t*>(done.data), bytes);
       if (written != bytes) audioError = true;
       wavDataBytes += written;
     }
-    if (captureRunning && done.data && !queueAudio(done.data)) audioError = true;
+#endif
+    if (captureRunning && done.data && !queueAudio(done.data)) {
+      audioError = true;
+    }
   }
 }
 
 bool startCapture() {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (!vsDirectOpusReady()) {
+    audioError = true;
+    return false;
+  }
+#else
   if (!wavFile) return false;
-  while (audioDoneQueue && uxQueueMessagesWaiting(audioDoneQueue)) { AudioDone d; xQueueReceive(audioDoneQueue, &d, 0); }
+#endif
+
+  while (audioDoneQueue && uxQueueMessagesWaiting(audioDoneQueue)) {
+    AudioDone d;
+    xQueueReceive(audioDoneQueue, &d, 0);
+  }
+
   M5.Speaker.end();
   auto cfg = M5.Mic.config();
   cfg.sample_rate = AUDIO_RATE;
   cfg.input_channel = m5::input_stereo;
   cfg.over_sampling = 1;
   cfg.noise_filter_level = 0;
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  // Keep microphone DMA/capture above the encoder. Opus gets the same core at
+  // low priority so capture always wins if both become runnable together.
+  cfg.task_pinned_core = VS_DO_MIC_CORE;
+  cfg.task_priority = VS_DO_MIC_PRIORITY;
+#endif
   M5.Mic.config(cfg);
   M5.Mic.setBufferReleaseCallback(nullptr, audioReleased);
-  if (!M5.Mic.begin()) { audioError = true; return false; }
+
+  if (!M5.Mic.begin()) {
+    audioError = true;
+    return false;
+  }
+
   captureRunning = true;
   if (!queueAudio(audioBufA) || !queueAudio(audioBufB)) {
     captureRunning = false;
@@ -502,6 +566,9 @@ bool startNewSession(Mode mode) {
   if (!sdOk) return false;
   selectedMode = mode;
   sessionId = findNextSessionId();
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  vsDirectOpusResetSession(sessionId);
+#endif
   patientNumber = 1;
   segmentNumber = 1;
   markerCount = 0;
@@ -544,10 +611,12 @@ void selectQuickMode(Mode mode) {
     selectedMode = Mode::MEETING;
     visitPatientFlow = false;
 
-    // The open temporary WAV was intentionally started before the type choice.
-    // Keep writing that same file and only alter its final rename target.
+#ifndef VISITESCRIBE_DIRECT_OPUS
+    // The WAV backend starts before the type choice, so only its final rename
+    // target changes. Direct Opus chunks use mode-neutral chunk names.
     snprintf(wavFinalPath, sizeof(wavFinalPath),
              "/visitescribe/s%05u_meeting.wav", sessionId);
+#endif
     logEvent("mode_selected_meeting", activeElapsedMs());
   } else {
     selectedMode = Mode::VISIT;
@@ -834,7 +903,11 @@ void setup() {
   wifiOff();
   lastUserActivityMs = millis();
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  Serial.println("VisiteScribe CoreS3-Lite DIRECT OGG/OPUS TEST");
+#else
   Serial.println("VisiteScribe CoreS3-Lite v0.2");
+#endif
   Serial.printf("board=%d pmic=%d touch=%s sd=%s battery=%d%%\n",
                 (int)M5.getBoard(), (int)M5.Power.getType(), touchOk ? "OK" : "FAIL", sdOk ? "OK" : "FAIL", batteryPct);
 
