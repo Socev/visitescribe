@@ -298,6 +298,11 @@ static bool vsEnsureSessionUuid(const String& prefix, String& uuid, String& sync
   return vsWriteSyncMeta(prefix, uuid, syncState.c_str());
 }
 
+static bool vsLocalSyncStateTerminal(const String& stateName) {
+  return stateName == "ingested" ||
+         stateName == "quarantined_no_audio";
+}
+
 static String vsBaseName(const char* name) {
   String s(name ? name : "");
   int slash = s.lastIndexOf('/');
@@ -366,7 +371,7 @@ static std::vector<String> vsPendingPrefixes() {
         String uuid, st;
         const bool hasMeta = vsReadSyncMeta(prefix, uuid, st);
 
-        if ((!hasMeta || st != "ingested") &&
+        if ((!hasMeta || !vsLocalSyncStateTerminal(st)) &&
             vsEventsShowComplete(eventsPath)) {
           bool hasAudio = !vsCollectWavs(prefix).empty();
 #ifdef VISITESCRIBE_DIRECT_OPUS
@@ -982,6 +987,247 @@ static bool vsPutChunk(const VsLocalSession& session, const VsChunkMeta& meta) {
   return true;
 }
 
+
+#ifdef VISITESCRIBE_DIRECT_OPUS
+static bool vsFillDirectOpusCryptoMeta(
+    const uint8_t sessionKey[32],
+    const String& uuid,
+    const VsDirectOpusChunkInfo& chunk,
+    VsChunkMeta& meta) {
+  uint8_t full[32];
+  const String nonceText =
+      String("nonce:v4-opus:") + uuid + ":" + String(chunk.sequence);
+  if (!vsHmacSha256(sessionKey, 32, nonceText, full)) return false;
+
+  meta = VsChunkMeta();
+  meta.sequence = chunk.sequence;
+  meta.durationMs = chunk.durationMs;
+  meta.plaintextBytes = chunk.bytes;
+  meta.ciphertextBytes = chunk.bytes + VS_GCM_TAG_BYTES;
+  meta.nonceB64 = vsBase64(full, VS_GCM_NONCE_BYTES);
+  meta.aad =
+      String("visitescribe-v4-opus:") + uuid + ":" + String(chunk.sequence);
+  return meta.nonceB64.length() > 0;
+}
+
+static bool vsPrepareDirectOpusChunk(
+    const VsLocalSession& session,
+    const uint8_t sessionKey[32],
+    const VsDirectOpusChunkInfo& chunk,
+    VsChunkMeta& meta) {
+  if (!chunk.bytes ||
+      !chunk.durationMs ||
+      chunk.durationMs > VS_SYNC_CHUNK_SECONDS * 1000UL) {
+    return false;
+  }
+  if (!vsEnsureChunkBuffers(chunk.bytes)) return false;
+  if (!vsFillDirectOpusCryptoMeta(
+          sessionKey, session.uuid, chunk, meta)) {
+    return false;
+  }
+
+  File opus = SD.open(chunk.path, FILE_READ);
+  if (!opus) return false;
+  const size_t physical = opus.size();
+  if (physical != chunk.bytes ||
+      !vsReadExact(opus, vsPlain, chunk.bytes)) {
+    opus.close();
+    return false;
+  }
+  opus.close();
+
+  if (chunk.bytes < 32 ||
+      memcmp(vsPlain, "OggS", 4) != 0) {
+    return false;
+  }
+
+  meta.plaintextSha256 = vsSha256Hex(vsPlain, chunk.bytes);
+  if (meta.plaintextSha256.length() != 64) return false;
+
+  uint8_t nonceFull[32];
+  const String nonceText =
+      String("nonce:v4-opus:") + session.uuid + ":" + String(chunk.sequence);
+  if (!vsHmacSha256(sessionKey, 32, nonceText, nonceFull)) return false;
+
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
+  int rc = mbedtls_gcm_setkey(
+      &gcm, MBEDTLS_CIPHER_ID_AES, sessionKey, 256);
+  uint8_t tag[VS_GCM_TAG_BYTES] = {0};
+  if (rc == 0) {
+    rc = mbedtls_gcm_crypt_and_tag(
+        &gcm,
+        MBEDTLS_GCM_ENCRYPT,
+        chunk.bytes,
+        nonceFull,
+        VS_GCM_NONCE_BYTES,
+        reinterpret_cast<const unsigned char*>(meta.aad.c_str()),
+        meta.aad.length(),
+        vsPlain,
+        vsCipher,
+        sizeof(tag),
+        tag);
+  }
+  mbedtls_gcm_free(&gcm);
+  if (rc != 0) return false;
+
+  memcpy(vsCipher + chunk.bytes, tag, sizeof(tag));
+  meta.ciphertextBytes = chunk.bytes + sizeof(tag);
+  meta.ciphertextSha256 =
+      vsSha256Hex(vsCipher, meta.ciphertextBytes);
+  return meta.ciphertextSha256.length() == 64;
+}
+
+static bool vsWriteDirectOpusManifest(
+    const VsLocalSession& session,
+    const uint8_t sessionKey[32],
+    const String& serverKeyId,
+    const String& wrappedKeyB64,
+    const String& manifestPath,
+    uint32_t& chunkCount) {
+  if (!session.directOpus || session.opus.empty()) {
+    return vsFail("Direct Opus metadata ontbreekt");
+  }
+
+  File manifest = SD.open(manifestPath, FILE_WRITE);
+  if (!manifest) return vsFail("Opus manifest bestand niet te maken");
+
+  manifest.printf(
+      "{\"schema_version\":2,\"session_id\":\"%s\","
+      "\"device_id\":\"%s\",\"mode\":\"%s\","
+      "\"status\":\"complete\","
+      "\"audio\":{\"codec\":\"opus\",\"container\":\"ogg\","
+      "\"sample_rate\":16000,\"channels\":1,"
+      "\"sample_format\":\"opus\",\"chunk_seconds\":30,"
+      "\"bitrate\":24000,\"frame_ms\":20},"
+      "\"encryption\":{\"algorithm\":\"AES-256-GCM\","
+      "\"local_key_wrap\":null,"
+      "\"server_key_wrap\":{\"algorithm\":\"RSA-OAEP-SHA256\","
+      "\"key_id\":\"%s\",\"ciphertext_b64\":\"%s\"}},"
+      "\"chunks\":[",
+      session.uuid.c_str(),
+      VISITESCRIBE_DEVICE_ID,
+      session.mode.c_str(),
+      serverKeyId.c_str(),
+      wrappedKeyB64.c_str());
+
+  uint64_t audioOffsetMs = 0;
+  bool first = true;
+  chunkCount = 0;
+
+  for (const auto& chunk : session.opus) {
+    if (chunk.sequence != chunkCount + 1 ||
+        !chunk.bytes ||
+        !chunk.durationMs ||
+        chunk.durationMs > VS_SYNC_CHUNK_SECONDS * 1000UL) {
+      manifest.close();
+      return vsFail("Direct Opus chunkmetadata ongeldig");
+    }
+
+    VsChunkMeta meta;
+    if (!vsFillDirectOpusCryptoMeta(
+            sessionKey, session.uuid, chunk, meta)) {
+      manifest.close();
+      return vsFail("Direct Opus crypto metadata mislukt");
+    }
+
+    if (!first) manifest.print(',');
+    first = false;
+    ++chunkCount;
+
+    manifest.printf(
+        "{\"sequence\":%lu,"
+        "\"file\":\"audio/chunk-%06lu.opus.enc\","
+        "\"nonce_b64\":\"%s\",\"aad\":\"%s\","
+        "\"plaintext_size\":%u,\"ciphertext_size\":%u,"
+        "\"start_offset_ms\":%llu,\"duration_ms\":%lu}",
+        (unsigned long)chunk.sequence,
+        (unsigned long)chunk.sequence,
+        meta.nonceB64.c_str(),
+        meta.aad.c_str(),
+        (unsigned)meta.plaintextBytes,
+        (unsigned)meta.ciphertextBytes,
+        (unsigned long long)audioOffsetMs,
+        (unsigned long)chunk.durationMs);
+
+    audioOffsetMs += chunk.durationMs;
+  }
+
+  manifest.print("]}");
+  manifest.flush();
+  manifest.close();
+
+  Serial.printf(
+      "SERVER: direct Opus manifest chunks=%lu duration=%llums\n",
+      (unsigned long)chunkCount,
+      (unsigned long long)audioOffsetMs);
+  return chunkCount > 0;
+}
+
+static bool vsUploadDirectOpusChunks(
+    const VsLocalSession& session,
+    const uint8_t sessionKey[32],
+    uint32_t expectedChunks,
+    const std::vector<uint32_t>* missing) {
+  vsServerStage = VsServerStage::UPLOAD_CHUNKS;
+  vsServerChunkTotal = expectedChunks;
+  vsServerChunkCurrent = 0;
+
+  uint32_t uploadedNow = 0;
+  uint32_t skipped = 0;
+  uint64_t uploadedBytes = 0;
+  const uint32_t started = millis();
+
+  for (const auto& chunk : session.opus) {
+    vsServerChunkCurrent = chunk.sequence;
+    if (!vsNeedSequence(chunk.sequence, missing)) {
+      ++skipped;
+      continue;
+    }
+
+    VsChunkMeta meta;
+    const uint32_t prepStarted = millis();
+    if (!vsPrepareDirectOpusChunk(
+            session, sessionKey, chunk, meta)) {
+      return vsFail(
+          String("Direct Opus voorbereiden mislukt chunk ") +
+          chunk.sequence);
+    }
+    const uint32_t prepMs = millis() - prepStarted;
+
+    vsServerMessage =
+        String("Opus ") + chunk.sequence + "/" + expectedChunks;
+    vsDrawServerSync(true);
+
+    const uint32_t httpStarted = millis();
+    if (!vsPutChunk(session, meta)) return false;
+    const uint32_t httpMs = millis() - httpStarted;
+
+    ++uploadedNow;
+    uploadedBytes += meta.ciphertextBytes;
+    Serial.printf(
+        "SERVER: direct Opus chunk %lu/%lu accepted "
+        "prep=%lums upload=%lums bytes=%u\n",
+        (unsigned long)chunk.sequence,
+        (unsigned long)expectedChunks,
+        (unsigned long)prepMs,
+        (unsigned long)httpMs,
+        (unsigned)meta.ciphertextBytes);
+  }
+
+  const uint32_t elapsed = millis() - started;
+  Serial.printf(
+      "SERVER: direct Opus upload done expected=%lu "
+      "uploaded_now=%lu skipped=%lu bytes=%llu total=%lums\n",
+      (unsigned long)expectedChunks,
+      (unsigned long)uploadedNow,
+      (unsigned long)skipped,
+      (unsigned long long)uploadedBytes,
+      (unsigned long)elapsed);
+  return session.opus.size() == expectedChunks;
+}
+#endif
+
 static bool vsNeedSequence(uint32_t sequence, const std::vector<uint32_t>* missing) {
   if (!missing) return true;
   return std::find(missing->begin(), missing->end(), sequence) != missing->end();
@@ -1209,6 +1455,103 @@ static bool vsFinishLocalSession(const VsLocalSession& session, uint32_t started
                 session.prefix.c_str(), (unsigned long)(millis() - startedMs));
   return true;
 }
+
+
+#ifdef VISITESCRIBE_DIRECT_OPUS
+static bool vsSyncDirectOpus(
+    const VsLocalSession& session,
+    const String& serverKeyId,
+    const String& serverPublicPem) {
+  const uint32_t sessionStarted = millis();
+  vsServerSessionPrefix = session.prefix;
+  vsServerChunkCurrent = vsServerChunkTotal = 0;
+  vsSetStage(VsServerStage::PREPARE,
+             session.prefix + " Opus");
+
+  uint8_t sessionKey[32];
+  if (!vsSessionKey(session.uuid, sessionKey)) {
+    return vsFail("Sessiesleutel maken mislukt");
+  }
+
+  String wrappedKey;
+  if (!vsWrapSessionKey(
+          sessionKey, serverPublicPem, wrappedKey)) {
+    memset(sessionKey, 0, sizeof(sessionKey));
+    return vsFail("RSA key wrap mislukt");
+  }
+
+  const String manifestPath =
+      String("/visitescribe/") +
+      session.prefix + "_upload_manifest.json";
+  if (SD.exists(manifestPath)) SD.remove(manifestPath);
+
+  uint32_t opusCount = 0;
+  if (!vsWriteDirectOpusManifest(
+          session,
+          sessionKey,
+          serverKeyId,
+          wrappedKey,
+          manifestPath,
+          opusCount)) {
+    SD.remove(manifestPath);
+    memset(sessionKey, 0, sizeof(sessionKey));
+    return false;
+  }
+  vsServerChunkTotal = opusCount;
+
+  const VsManifestPost post =
+      vsPostManifest(session, manifestPath);
+  SD.remove(manifestPath);
+  if (post == VsManifestPost::FAILED) {
+    memset(sessionKey, 0, sizeof(sessionKey));
+    return false;
+  }
+
+  VsRemoteStatus remote;
+  const bool haveRemote =
+      vsFetchRemoteStatus(
+          session,
+          remote,
+          post == VsManifestPost::CONFLICT);
+  if (post == VsManifestPost::CONFLICT && !haveRemote) {
+    memset(sessionKey, 0, sizeof(sessionKey));
+    return false;
+  }
+
+  if (haveRemote && remote.confirmed) {
+    memset(sessionKey, 0, sizeof(sessionKey));
+    return vsFinishLocalSession(
+        session, sessionStarted);
+  }
+
+  const std::vector<uint32_t>* missing = nullptr;
+  if (haveRemote && remote.valid) {
+    if (remote.expectedChunks != opusCount) {
+      memset(sessionKey, 0, sizeof(sessionKey));
+      return vsFail(
+          String("Bestaande Opus sessie heeft ") +
+          remote.expectedChunks +
+          " chunks; lokaal=" + opusCount);
+    }
+    missing = &remote.missing;
+    Serial.printf(
+        "SERVER: resume direct Opus; %u/%lu chunks nog nodig\n",
+        (unsigned)remote.missing.size(),
+        (unsigned long)opusCount);
+  }
+
+  bool ok = vsUploadDirectOpusChunks(
+      session, sessionKey, opusCount, missing);
+  if (ok) ok = vsPostEvents(session);
+  if (ok) ok = vsComplete(session, opusCount);
+  if (ok) ok = vsConfirm(session);
+
+  memset(sessionKey, 0, sizeof(sessionKey));
+  if (!ok) return false;
+  return vsFinishLocalSession(
+      session, sessionStarted);
+}
+#endif
 
 static bool vsSyncOne(const VsLocalSession& session,
                       const String& serverKeyId, const String& serverPublicPem) {
