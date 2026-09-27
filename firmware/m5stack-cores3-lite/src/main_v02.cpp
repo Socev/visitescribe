@@ -3,6 +3,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <WiFi.h>
+#include "brian_ourmind_logo.h"
 
 #if __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"
@@ -167,24 +168,22 @@ void centeredText(int y, const char* text, uint16_t color, uint8_t size = 1) {
 }
 
 static void drawOurMindBootLogo() {
-  const int iconX = 199;
-  const int iconY = 8;
+  const int x0 = SCREEN_W - BRIAN_OURMIND_LOGO_W - 8;
+  const int y0 = 6;
   const uint16_t ink = 0x0000;
 
-  // Compact brain/cross mark inspired by the supplied OurMind logo.
-  M5.Display.drawRoundRect(iconX + 7, iconY, 12, 28, 5, ink);
-  M5.Display.drawRoundRect(iconX, iconY + 7, 26, 14, 5, ink);
-  M5.Display.fillCircle(iconX + 5, iconY + 8, 3, ink);
-  M5.Display.fillCircle(iconX + 21, iconY + 8, 3, ink);
-  M5.Display.fillCircle(iconX + 5, iconY + 20, 3, ink);
-  M5.Display.fillCircle(iconX + 21, iconY + 20, 3, ink);
-  M5.Display.fillRect(iconX + 11, iconY + 5, 4, 18, C_WHITE);
-  M5.Display.fillRect(iconX + 5, iconY + 12, 16, 4, C_WHITE);
-
-  M5.Display.setTextDatum(top_left);
-  M5.Display.setTextColor(ink);
-  M5.Display.setTextSize(2);
-  M5.Display.drawString("OurMind", iconX + 33, iconY + 5);
+  // Monochrome bitmap derived from the supplied OurMind logo screenshot.
+  // White is already the boot background; only black pixels are drawn.
+  const int rowBytes = (BRIAN_OURMIND_LOGO_W + 7) / 8;
+  for (int y = 0; y < BRIAN_OURMIND_LOGO_H; ++y) {
+    for (int x = 0; x < BRIAN_OURMIND_LOGO_W; ++x) {
+      const uint8_t b = pgm_read_byte(
+          &BRIAN_OURMIND_LOGO_BITS[y * rowBytes + (x >> 3)]);
+      if (b & (0x80 >> (x & 7))) {
+        M5.Display.drawPixel(x0 + x, y0 + y, ink);
+      }
+    }
+  }
 }
 
 static void drawBrianRobotFrame(int frame) {
