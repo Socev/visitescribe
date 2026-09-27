@@ -82,14 +82,10 @@ static void showStorageStatus() {
 static void drawMenuV03() {
   drawHeader("MENU");
 #ifdef VISITESCRIBE_DEMO_UI
-  // Four rows in the demo build: normal workflow plus an isolated LAN
-  // throughput benchmark that never touches real recordings.
-  zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
-  zone(HOME_ROUND, "SYNC", C_TEAL, C_WHITE, "opnames naar server");
-  const char* lanStatus =
-      vsLanBenchmarkStatusHook ? vsLanBenchmarkStatusHook() : "laptop 192.168.2.31";
-  zone(HOME_MEETING, "LAN TEST", C_AMBER, C_NAVY, lanStatus);
-  zone(HOME_MENU, "TERUG", C_NAVY, C_WHITE);
+  // Pocket production menu: keep only actions that belong on the recorder.
+  zone(THREE_TOP, "STATUS", C_BLUE, C_WHITE);
+  zone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "opnames naar server");
+  zone(THREE_BOTTOM, "TERUG", C_NAVY, C_WHITE);
 #else
   // Four 50 px rows deliberately reuse the home-screen rectangles so no new
   // touch geometry is introduced into the proven base UI.
@@ -107,15 +103,13 @@ static void drawMenuV03() {
 
 static void handleMenuTouchV03(int x, int y) {
 #ifdef VISITESCRIBE_DEMO_UI
-  if (HOME_VISIT.contains(x, y)) {
+  if (THREE_TOP.contains(x, y)) {
     refreshBattery();
     state = AppState::STATUS;
     screenDirty = true;
-  } else if (HOME_ROUND.contains(x, y)) {
+  } else if (THREE_MIDDLE.contains(x, y)) {
     beginSync();
-  } else if (HOME_MEETING.contains(x, y)) {
-    if (vsLanBenchmarkHook) vsLanBenchmarkHook();
-  } else if (HOME_MENU.contains(x, y)) {
+  } else if (THREE_BOTTOM.contains(x, y)) {
     goHome();
   }
 #else
