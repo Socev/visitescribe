@@ -166,6 +166,115 @@ void centeredText(int y, const char* text, uint16_t color, uint8_t size = 1) {
   M5.Display.drawString(text, SCREEN_W / 2, y);
 }
 
+static void drawOurMindBootLogo() {
+  const int iconX = 199;
+  const int iconY = 8;
+  const uint16_t ink = 0x0000;
+
+  // Compact brain/cross mark inspired by the supplied OurMind logo.
+  M5.Display.drawRoundRect(iconX + 7, iconY, 12, 28, 5, ink);
+  M5.Display.drawRoundRect(iconX, iconY + 7, 26, 14, 5, ink);
+  M5.Display.fillCircle(iconX + 5, iconY + 8, 3, ink);
+  M5.Display.fillCircle(iconX + 21, iconY + 8, 3, ink);
+  M5.Display.fillCircle(iconX + 5, iconY + 20, 3, ink);
+  M5.Display.fillCircle(iconX + 21, iconY + 20, 3, ink);
+  M5.Display.fillRect(iconX + 11, iconY + 5, 4, 18, C_WHITE);
+  M5.Display.fillRect(iconX + 5, iconY + 12, 16, 4, C_WHITE);
+
+  M5.Display.setTextDatum(top_left);
+  M5.Display.setTextColor(ink);
+  M5.Display.setTextSize(2);
+  M5.Display.drawString("OurMind", iconX + 33, iconY + 5);
+}
+
+static void drawBrianRobotFrame(int frame) {
+  const int bob = (frame % 8 < 4) ? 0 : 2;
+  const int cx = 155;
+  const int headY = 62 + bob;
+  const uint16_t ink = 0x18E3;
+  const uint16_t accent = C_BLUE;
+  const uint16_t pale = 0xEF7D;
+
+  // Erase the animation area only; the OurMind mark stays stable.
+  M5.Display.fillRect(70, 46, 170, 150, C_WHITE);
+
+  // Antenna + little medical cross.
+  M5.Display.drawLine(cx, headY - 14, cx, headY - 5, ink);
+  M5.Display.fillCircle(cx, headY - 17, 4, accent);
+  M5.Display.fillRect(cx - 2, headY - 21, 4, 8, C_WHITE);
+  M5.Display.fillRect(cx - 4, headY - 19, 8, 4, C_WHITE);
+
+  // Robot head.
+  M5.Display.fillRoundRect(cx - 44, headY, 88, 58, 16, pale);
+  M5.Display.drawRoundRect(cx - 44, headY, 88, 58, 16, ink);
+  M5.Display.fillRoundRect(cx - 35, headY + 10, 70, 31, 10, C_WHITE);
+  M5.Display.drawRoundRect(cx - 35, headY + 10, 70, 31, 10, ink);
+
+  const bool blink = (frame == 5 || frame == 6 || frame == 13);
+  if (blink) {
+    M5.Display.drawFastHLine(cx - 23, headY + 25, 13, ink);
+    M5.Display.drawFastHLine(cx + 10, headY + 25, 13, ink);
+  } else {
+    M5.Display.fillCircle(cx - 17, headY + 25, 5, accent);
+    M5.Display.fillCircle(cx + 17, headY + 25, 5, accent);
+    M5.Display.fillCircle(cx - 16, headY + 23, 1, C_WHITE);
+    M5.Display.fillCircle(cx + 18, headY + 23, 1, C_WHITE);
+  }
+  M5.Display.drawLine(cx - 8, headY + 36, cx, headY + 39, ink);
+  M5.Display.drawLine(cx, headY + 39, cx + 8, headY + 36, ink);
+
+  // Doctor body + coat.
+  const int bodyY = headY + 62;
+  M5.Display.fillRoundRect(cx - 48, bodyY, 96, 53, 10, C_WHITE);
+  M5.Display.drawRoundRect(cx - 48, bodyY, 96, 53, 10, ink);
+  M5.Display.drawLine(cx, bodyY + 2, cx, bodyY + 49, C_LINE);
+  M5.Display.drawLine(cx - 31, bodyY + 10, cx - 10, bodyY + 28, C_LINE);
+  M5.Display.drawLine(cx + 31, bodyY + 10, cx + 10, bodyY + 28, C_LINE);
+
+  // Stethoscope.
+  M5.Display.drawCircle(cx - 17, bodyY + 14, 4, accent);
+  M5.Display.drawCircle(cx + 17, bodyY + 14, 4, accent);
+  M5.Display.drawLine(cx - 17, bodyY + 18, cx - 17, bodyY + 31, accent);
+  M5.Display.drawLine(cx + 17, bodyY + 18, cx + 17, bodyY + 31, accent);
+  M5.Display.drawCircle(cx, bodyY + 36, 8, accent);
+  M5.Display.fillCircle(cx, bodyY + 36, 3, accent);
+
+  // A tiny moving heartbeat trace.
+  const int pulseX = 86 + (frame * 5) % 118;
+  M5.Display.drawFastHLine(86, 190, 118, C_LINE);
+  M5.Display.drawLine(pulseX - 8, 190, pulseX - 3, 190, accent);
+  M5.Display.drawLine(pulseX - 3, 190, pulseX, 182, accent);
+  M5.Display.drawLine(pulseX, 182, pulseX + 4, 197, accent);
+  M5.Display.drawLine(pulseX + 4, 197, pulseX + 8, 190, accent);
+}
+
+static void showBrianBootAnimation() {
+  M5.Display.wakeup();
+  M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
+  M5.Display.fillScreen(C_WHITE);
+  drawOurMindBootLogo();
+
+  M5.Display.setTextDatum(top_left);
+  M5.Display.setTextColor(C_GREY);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString("VisiteScribe", 10, 10);
+
+  for (int frame = 0; frame < 14; ++frame) {
+    drawBrianRobotFrame(frame);
+    delay(45);
+  }
+
+  M5.Display.fillRect(70, 198, 170, 35, C_WHITE);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(C_NAVY);
+  M5.Display.setTextSize(3);
+  M5.Display.drawString("BRIAN", 155, 211);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(C_GREY);
+  M5.Display.drawString("ready to listen", 155, 231);
+  delay(360);
+}
+
 void zone(const Rect& r, const char* title, uint16_t fill, uint16_t fg, const char* subtitle = nullptr) {
   M5.Display.fillRect(r.x, r.y, r.w, r.h, fill);
   M5.Display.drawFastHLine(r.x, r.y, r.w, C_WHITE);
@@ -192,7 +301,7 @@ void drawHeader(const char* status, const char* sub = nullptr) {
   M5.Display.setTextDatum(top_left);
   M5.Display.setTextColor(C_BLUE);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("VisiteScribe", 8, 5);
+  M5.Display.drawString("Brian | VisiteScribe", 8, 5);
   char batt[24];
   if (batteryPct < 0) snprintf(batt, sizeof(batt), "--%%");
   else snprintf(batt, sizeof(batt), "%s%d%%", batteryCharging ? "+" : "", batteryPct);
@@ -909,6 +1018,9 @@ void setup() {
   M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
   M5.Display.fillScreen(C_BG);
   M5.Speaker.end();
+
+  showBrianBootAnimation();
+  M5.Display.fillScreen(C_BG);
 
   audioDoneQueue = xQueueCreate(4, sizeof(AudioDone));
   touchOk = ensureTouchController();
