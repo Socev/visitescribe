@@ -45,6 +45,16 @@ static bool axp2101DirectOk = false;
 static constexpr uint32_t PWR_DOUBLE_CLICK_MS = 360;
 static bool pwrClickPendingV03 = false;
 static uint32_t pwrFirstClickMsV03 = 0;
+static uint32_t pwrWakeGuardUntilV03 = 0;
+
+// Type choice is committed on release inside the same card. This prevents a
+// finger already resting on the display from selecting a mode on screen-open.
+static bool quickTouchArmedV03 = false;
+static uint8_t quickTouchChoiceV03 = 0; // 1=visit, 2=meeting
+static int quickTouchLastXV03 = 0;
+static int quickTouchLastYV03 = 0;
+static const Rect QUICK_VISIT_TOUCH {4, 74, 312, 52};
+static const Rect QUICK_MEETING_TOUCH {4, 128, 312, 52};
 
 // Later sync layers may attach a synthetic upload benchmark here. Keeping this
 // as a hook means older recorder layers still compile and simply fall back to
@@ -80,52 +90,21 @@ static void showStorageStatus() {
 }
 
 static void drawMenuV03() {
-  drawHeader("MENU");
-#ifdef VISITESCRIBE_DEMO_UI
-  // Pocket production menu: keep only actions that belong on the recorder.
-  zone(THREE_TOP, "STATUS", C_BLUE, C_WHITE);
-  zone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "opnames naar server");
-  zone(THREE_BOTTOM, "TERUG", C_NAVY, C_WHITE);
-#else
-  // Four 50 px rows deliberately reuse the home-screen rectangles so no new
-  // touch geometry is introduced into the proven base UI.
-  zone(HOME_VISIT, "STATUS", C_BLUE, C_WHITE);
-  zone(HOME_ROUND, "SYNC", C_TEAL, C_WHITE, "echte opnames uploaden");
-#ifdef VISITESCRIBE_OPUS_EXPERIMENT
-  const char* opusStatus = vsSyntheticTestStatusHook ? vsSyntheticTestStatusHook() : "tik om te starten";
-  zone(HOME_MEETING, "OPUS TEST", C_AMBER, C_NAVY, opusStatus);
-#else
-  zone(HOME_MEETING, "SYNC TEST", C_AMBER, C_NAVY, "10 dummy chunks");
-#endif
-  zone(HOME_MENU, "TERUG", C_NAVY, C_WHITE);
-#endif
+  // The pocket build now shares the same three-item Brian menu everywhere.
+  drawMenu();
 }
 
 static void handleMenuTouchV03(int x, int y) {
-#ifdef VISITESCRIBE_DEMO_UI
   if (THREE_TOP.contains(x, y)) {
+    beginSync();
+  } else if (THREE_MIDDLE.contains(x, y)) {
     refreshBattery();
     state = AppState::STATUS;
+    lastUserActivityMs = millis();
     screenDirty = true;
-  } else if (THREE_MIDDLE.contains(x, y)) {
-    beginSync();
   } else if (THREE_BOTTOM.contains(x, y)) {
     goHome();
   }
-#else
-  if (HOME_VISIT.contains(x, y)) {
-    refreshBattery();
-    state = AppState::STATUS;
-    screenDirty = true;
-  } else if (HOME_ROUND.contains(x, y)) {
-    beginSync();
-  } else if (HOME_MEETING.contains(x, y)) {
-    if (vsSyntheticTestHook) vsSyntheticTestHook();
-    else beginSync();
-  } else if (HOME_MENU.contains(x, y)) {
-    goHome();
-  }
-#endif
 }
 
 static void pocketOpenMenuV03() {
@@ -139,13 +118,55 @@ static void pocketOpenMenuV03() {
 }
 
 static void pocketSinglePowerV03() {
-  if (state == AppState::SYNC) return;
+  switch (state) {
+    case AppState::SYNC:
+      if (vsSyncTouchLockedHook && vsSyncTouchLockedHook()) return;
+      wifiOff();
+      syncPhase = SyncPhase::NOT_STARTED;
+      goHome();
+      return;
 
-  if (state == AppState::RECORDING || state == AppState::PAUSED) {
-    // A session stopped before the 10 s choice expires is a VISITE by default.
-    if (quickModeChoiceActive) selectQuickMode(Mode::VISIT);
-    stopSession();
-    return;
+    case AppState::SAVING:
+      return;
+
+    case AppState::RECORDING:
+    case AppState::PAUSED:
+      // PWR during the ten-second chooser is still STOP. If the resulting
+      // recording is under ten seconds it will be discarded as a false start.
+      if (quickModeChoiceActive) selectQuickMode(Mode::VISIT);
+      stopSession();
+      return;
+
+    case AppState::MENU:
+      goHome();
+      return;
+
+    case AppState::STATUS:
+      state = AppState::MENU;
+      lastUserActivityMs = millis();
+      screenDirty = true;
+      return;
+
+    case AppState::DETAILS:
+      state = AppState::STATUS;
+      lastUserActivityMs = millis();
+      screenDirty = true;
+      return;
+
+    case AppState::ERROR:
+      goHome();
+      return;
+
+    case AppState::FINISHED:
+      goHome();
+      break;
+
+    case AppState::HOME:
+      break;
+
+    case AppState::MODE_CONFIRM:
+      goHome();
+      break;
   }
 
   if (!sdOk) {
@@ -153,31 +174,47 @@ static void pocketSinglePowerV03() {
     return;
   }
 
-  if (state == AppState::FINISHED) goHome();
-
   if (!startQuickSession()) {
-    showStorageStatus();
+    state = AppState::ERROR;
+    if (!uiErrorTitle.length()) uiErrorTitle = "Opnemen niet mogelijk";
+    if (!uiErrorDetail.length()) uiErrorDetail = "Controleer Apparaatstatus";
+    screenDirty = true;
     return;
   }
+
+  // If a finger was already resting on the touchscreen before PWR started the
+  // recording, consume that held contact. A mode can only be chosen after it
+  // has been released and touched again.
+  int tx=0, ty=0, rawX=0, rawY=0;
+  touchWasDown = readTouchV03(tx, ty, rawX, rawY);
+  quickTouchArmedV03 = false;
+  quickTouchChoiceV03 = 0;
 
   lastUserActivityMs = millis();
   screenDirty = true;
 }
 
 static void pocketDoublePowerV03() {
-  if (state == AppState::SYNC) return;
+  switch (state) {
+    case AppState::RECORDING:
+    case AppState::PAUSED:
+      // Before type is established, double PWR deliberately has no meaning.
+      // It must never secretly turn into "next patient".
+      if (quickModeChoiceActive) return;
+      addMarkerOrNext();
+      lastUserActivityMs = millis();
+      screenDirty = true;
+      return;
 
-  if (state == AppState::RECORDING || state == AppState::PAUSED) {
-    // A patient boundary before an explicit type choice unambiguously makes
-    // this a VISITE. Lock that choice first so filenames/events stay coherent.
-    if (quickModeChoiceActive) selectQuickMode(Mode::VISIT);
-    addMarkerOrNext();
-    lastUserActivityMs = millis();
-    screenDirty = true;
-    return;
+    case AppState::HOME:
+    case AppState::FINISHED:
+      pocketOpenMenuV03();
+      return;
+
+    default:
+      // Double-click is intentionally inert in menu/status/sync/error/saving.
+      return;
   }
-
-  pocketOpenMenuV03();
 }
 
 static void serviceInputsV03() {
@@ -186,18 +223,24 @@ static void serviceInputsV03() {
     pek = M5.Power.Axp2101.getPekPress();
   }
 
-  // A physical PWR short press is authoritative. If the LCD is asleep, this
-  // press is consumed exclusively by wake-up, exactly as requested.
   if ((pek & 0x02) != 0) {
     const AppState before = state;
+    const uint32_t now = millis();
 
-    if (wakeOnlyIfOff()) {
+    if (displayPower == DisplayPower::OFF && wakeOnlyIfOff()) {
       pwrClickPendingV03 = false;
       pwrFirstClickMsV03 = 0;
+      pwrWakeGuardUntilV03 = now + PWR_DOUBLE_CLICK_MS;
       Serial.printf("PWR wake-only app=%u\n", (unsigned)before);
+    } else if (static_cast<int32_t>(pwrWakeGuardUntilV03 - now) > 0) {
+      // Consume every short click belonging to the same wake gesture and move
+      // the quiet window forward. Only a fresh gesture after silence can act.
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      pwrWakeGuardUntilV03 = now + PWR_DOUBLE_CLICK_MS;
+      Serial.printf("PWR wake-guard consumed app=%u\n", (unsigned)before);
     } else {
       noteActivity();
-      const uint32_t now = millis();
 
       if (pwrClickPendingV03 &&
           now - pwrFirstClickMsV03 <= PWR_DOUBLE_CLICK_MS) {
@@ -214,7 +257,6 @@ static void serviceInputsV03() {
     }
   }
 
-  // Fire a single-click action only once the double-click window has expired.
   if (pwrClickPendingV03 &&
       millis() - pwrFirstClickMsV03 > PWR_DOUBLE_CLICK_MS) {
     const AppState before = state;
@@ -227,38 +269,40 @@ static void serviceInputsV03() {
 
   serviceQuickModeChoiceTimeout();
 
-  // Touch is deliberately not even polled on HOME, during a locked recording,
-  // or while the LCD sleeps. This prevents pocket touches and removes the old
-  // ~200 I2C touch reads/second power cost.
   const bool touchAllowed =
       displayPower != DisplayPower::OFF &&
       (quickModeChoiceActive ||
        state == AppState::MENU ||
        state == AppState::STATUS ||
-       state == AppState::SYNC);
+       state == AppState::DETAILS ||
+       state == AppState::SYNC ||
+       state == AppState::ERROR);
 
   int tx = 0, ty = 0, rawX = 0, rawY = 0;
   const bool touchDown =
       touchAllowed && readTouchV03(tx, ty, rawX, rawY);
+
+  if (touchDown) {
+    quickTouchLastXV03 = tx;
+    quickTouchLastYV03 = ty;
+  }
 
   if (touchDown && !touchWasDown) {
     const AppState before = state;
     noteActivity();
 
     if (quickModeChoiceActive) {
-      if (TWO_TOP.contains(tx, ty)) {
-        selectQuickMode(Mode::VISIT);
-      } else if (TWO_BOTTOM.contains(tx, ty)) {
-        selectQuickMode(Mode::MEETING);
-      }
+      quickTouchArmedV03 = true;
+      quickTouchChoiceV03 =
+          QUICK_VISIT_TOUCH.contains(tx, ty) ? 1 :
+          (QUICK_MEETING_TOUCH.contains(tx, ty) ? 2 : 0);
+      if (!quickTouchChoiceV03) quickTouchArmedV03 = false;
     } else if (state == AppState::MENU) {
       handleMenuTouchV03(tx, ty);
-    } else if (state == AppState::STATUS) {
-      if (STATUS_BACK.contains(tx, ty)) {
-        state = AppState::MENU;
-        screenDirty = true;
-      }
-    } else if (state == AppState::SYNC) {
+    } else if (state == AppState::STATUS ||
+               state == AppState::DETAILS ||
+               state == AppState::SYNC ||
+               state == AppState::ERROR) {
       handleTouch(tx, ty);
     }
 
@@ -268,6 +312,28 @@ static void serviceInputsV03() {
         (unsigned)before, (unsigned)state);
   }
 
+  if (!touchDown && touchWasDown && quickTouchArmedV03) {
+    const bool visitCommit =
+        quickTouchChoiceV03 == 1 &&
+        QUICK_VISIT_TOUCH.contains(quickTouchLastXV03, quickTouchLastYV03);
+    const bool meetingCommit =
+        quickTouchChoiceV03 == 2 &&
+        QUICK_MEETING_TOUCH.contains(quickTouchLastXV03, quickTouchLastYV03);
+
+    quickTouchArmedV03 = false;
+    quickTouchChoiceV03 = 0;
+
+    if (quickModeChoiceActive) {
+      if (visitCommit) selectQuickMode(Mode::VISIT);
+      else if (meetingCommit) selectQuickMode(Mode::MEETING);
+    }
+  }
+
+  if (!quickModeChoiceActive) {
+    quickTouchArmedV03 = false;
+    quickTouchChoiceV03 = 0;
+  }
+
   touchWasDown = touchAllowed ? touchDown : false;
 
   if (state == AppState::MENU && screenDirty) {
@@ -275,9 +341,6 @@ static void serviceInputsV03() {
     drawMenuV03();
   }
 
-  // Keep M5Unified housekeeping alive for PMIC/audio internals. Long-press PEK
-  // events are intentionally ignored by the application; there is no privacy
-  // action on PWR.
   M5.update();
 }
 
