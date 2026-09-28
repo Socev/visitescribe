@@ -1194,8 +1194,8 @@ void cycleQuickChoice() {
 static void commitQuickRecordingMode() {
   if (!quickModeChoiceActive || !sessionOpen) return;
 
-  // STOP is deliberately not a recording mode. If it happens to be highlighted
-  // when the ten-second chooser expires, keep the last actual mode and record.
+  // Commit the last actual recording mode before continuing or stopping.
+  // This preserves correct mode metadata when STOP is confirmed by timeout.
   if (selectedMode == Mode::MEETING) {
 #ifndef VISITESCRIBE_DIRECT_OPUS
     snprintf(wavFinalPath, sizeof(wavFinalPath),
@@ -1217,7 +1217,10 @@ static void commitQuickRecordingMode() {
 void serviceQuickModeChoiceTimeout() {
   if (!quickModeChoiceActive) return;
   if (millis() - quickModeChoiceStartedMs < QUICK_MODE_CHOICE_MS) return;
+  const bool stopSelected = quickChoice == QuickChoice::STOP;
   commitQuickRecordingMode();
+  // PWR only selects; expiry confirms STOP through the normal save/error path.
+  if (stopSelected) stopSession();
 }
 
 void togglePrivacy() {

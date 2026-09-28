@@ -328,7 +328,10 @@ storage setup, encoder/worker startup, and total startup time. HOME retains the
 shows `Opname starten...` before synchronous initialization. The chooser labels
 use ASCII `Patient` and `Vergadering`, without a Patient subtitle. PWR during
 the ten-second chooser only cycles Patient -> Vergadering -> STOP -> Patient;
-expiry keeps the most recent actual recording mode, even when STOP is selected.
+expiry confirms the highlighted choice: Patient/ Vergadering continue recording,
+while STOP ends recording through the normal save/error path. The last actual
+recording mode is committed before stopping. Cycling onward from STOP before
+expiry continues recording.
 
 Hardware regression procedure:
 
@@ -342,7 +345,8 @@ Hardware regression procedure:
 5. Wake the display with one PWR gesture; after the wake guard, stop with a new
    single PWR. Require worker DONE with `failed=0`, `dropped=0`, and saved UI.
 6. Separately confirm that touching STOP within 10 seconds removes a false
-   start and that leaving STOP selected until chooser expiry continues capture.
+   start; leaving STOP selected until chooser expiry must stop and save normally.
+   Cycling STOP -> Patient before expiry must keep recording.
 
 If the esptool upload stub cannot verify the flash connection, the installed
 esptool ROM path (`--before usb_reset --no-stub`) can program the application
