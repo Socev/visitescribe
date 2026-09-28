@@ -1193,6 +1193,33 @@ void stopSession() {
   screenDirty = true;
 }
 
+
+void handleActiveRecordingError() {
+  if (state != AppState::RECORDING || !audioError) return;
+
+  const uint32_t off = activeElapsedMs();
+  stopCapture();
+
+  state = AppState::SAVING;
+  screenDirty = true;
+  render(true);
+
+  logEvent("recording_error", off);
+  finalizeWavSegment();
+
+  sessionOpen = false;
+  quickModeChoiceActive = false;
+  quickModeChoiceStartedMs = 0;
+  uiErrorTitle = "Opname onderbroken";
+  uiErrorDetail = "Audio- of opslagfout gedetecteerd";
+  state = AppState::ERROR;
+  screenDirty = true;
+
+  Serial.printf(
+      "RECORDER: active recording error s%05u duration=%lums\n",
+      sessionId, (unsigned long)off);
+}
+
 void resumeSession() {
   if (!sessionOpen || state != AppState::FINISHED) return;
   totalPausedMs += millis() - finishedAtMs;
