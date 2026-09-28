@@ -940,9 +940,29 @@ bool startCapture() {
 void stopCapture() {
   captureRunning = false;
   uint32_t deadline = millis() + 1000;
-  while (M5.Mic.isRecording() && (int32_t)(deadline - millis()) > 0) { serviceAudio(); delay(1); }
+  while (M5.Mic.isRecording() && (int32_t)(deadline - millis()) > 0) {
+    serviceAudio();
+    delay(1);
+  }
   M5.Mic.end();
   serviceAudio();
+}
+
+static bool discardCurrentFalseStart() {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  return vsDirectOpusDiscardSession(sessionId);
+#else
+  bool ok = true;
+  if (wavFile) wavFile.close();
+  if (wavTmpPath[0] && SD.exists(wavTmpPath) && !SD.remove(wavTmpPath)) ok = false;
+  if (wavFinalPath[0] && SD.exists(wavFinalPath) && !SD.remove(wavFinalPath)) ok = false;
+  if (eventsPath[0] && SD.exists(eventsPath) && !SD.remove(eventsPath)) ok = false;
+
+  char syncPath[96];
+  snprintf(syncPath, sizeof(syncPath), "/visitescribe/s%05u_sync.txt", sessionId);
+  if (SD.exists(syncPath) && !SD.remove(syncPath)) ok = false;
+  return ok;
+#endif
 }
 
 bool startNewSession(Mode mode) {
@@ -955,6 +975,13 @@ bool startNewSession(Mode mode) {
   patientNumber = 1;
   segmentNumber = 1;
   markerCount = 0;
+  patientSegmentStartOffsetMs = 0;
+  recordingToast[0] = '\0';
+  recordingToastUntilMs = 0;
+  lastSessionFalseStart = false;
+  lastSessionSaved = false;
+  uiErrorTitle = "";
+  uiErrorDetail = "";
   totalPausedMs = 0;
   pauseStartedMs = 0;
   sessionStartedMs = millis();
@@ -962,10 +989,29 @@ bool startNewSession(Mode mode) {
   snprintf(eventsPath, sizeof(eventsPath), "/visitescribe/s%05u_events.csv", sessionId);
   if (SD.exists(eventsPath)) SD.remove(eventsPath);
   File events = SD.open(eventsPath, FILE_WRITE);
-  if (events) { events.println("elapsed_ms,event,patient,segment,markers,audio_file"); events.close(); }
-  if (!openWavSegment()) { sessionOpen = false; return false; }
+  if (!events) {
+    sessionOpen = false;
+    uiErrorTitle = "Opnemen niet mogelijk";
+    uiErrorDetail = "Kan opslag niet openen";
+    return false;
+  }
+  events.println("elapsed_ms,event,patient,segment,markers,audio_file");
+  events.close();
+
+  if (!openWavSegment()) {
+    sessionOpen = false;
+    uiErrorTitle = "Opnemen niet mogelijk";
+    uiErrorDetail = "Audiobestand kon niet starten";
+    return false;
+  }
   logEvent("session_started", 0);
-  if (!startCapture()) { finalizeWavSegment(); sessionOpen = false; return false; }
+  if (!startCapture()) {
+    finalizeWavSegment();
+    sessionOpen = false;
+    uiErrorTitle = "Opnemen niet mogelijk";
+    uiErrorDetail = "Microfoon kon niet starten";
+    return false;
+  }
   state = AppState::RECORDING;
   screenDirty = true;
   return true;
@@ -1038,35 +1084,112 @@ void togglePrivacy() {
 }
 
 void addMarkerOrNext() {
-  uint32_t off = activeElapsedMs();
+  const uint32_t off = activeElapsedMs();
   const bool patientMode =
-      selectedMode == Mode::ROUND || (selectedMode == Mode::VISIT && visitPatientFlow);
+      selectedMode == Mode::ROUND ||
+      (selectedMode == Mode::VISIT && visitPatientFlow);
+
   if (patientMode) {
     if (state == AppState::RECORDING) stopCapture();
     logEvent("patient_boundary", off);
     finalizeWavSegment();
+
+    if (audioError) {
+      sessionOpen = false;
+      uiErrorTitle = "Opname onderbroken";
+      uiErrorDetail = "Opslaan van patientsegment mislukt";
+      state = AppState::ERROR;
+      screenDirty = true;
+      return;
+    }
+
     ++patientNumber;
     segmentNumber = 1;
-    if (!openWavSegment() || !startCapture()) audioError = true;
+    patientSegmentStartOffsetMs = off;
+    if (!openWavSegment() || !startCapture()) {
+      audioError = true;
+      sessionOpen = false;
+      uiErrorTitle = "Opname onderbroken";
+      uiErrorDetail = "Nieuwe patient kon niet starten";
+      state = AppState::ERROR;
+      screenDirty = true;
+      return;
+    }
+
     state = AppState::RECORDING;
     logEvent("patient_started", off);
+    char toast[48];
+    snprintf(toast, sizeof(toast), "Patient %u gestart", patientNumber);
+    setRecordingToast(toast);
   } else {
     ++markerCount;
     logEvent("marker", off);
+    char toast[48];
+    snprintf(toast, sizeof(toast), "Markering %u geplaatst", markerCount);
+    setRecordingToast(toast);
   }
   screenDirty = true;
 }
 
 void stopSession() {
   if (!sessionOpen) return;
-  uint32_t off = activeElapsedMs();
-  bool paused = state == AppState::PAUSED;
+
+  const uint32_t off = activeElapsedMs();
+  const bool paused = state == AppState::PAUSED;
+
   if (!paused) stopCapture();
+
+  // Make the local-finalization state explicit before the blocking encoder/SD
+  // close. PWR/touch handlers ignore SAVING.
+  state = AppState::SAVING;
+  screenDirty = true;
+  render(true);
+
   logEvent("session_stopped", off);
   finalizeWavSegment();
-  if (paused) { totalPausedMs += millis() - pauseStartedMs; pauseStartedMs = 0; }
-  state = AppState::FINISHED;
+  if (paused) {
+    totalPausedMs += millis() - pauseStartedMs;
+    pauseStartedMs = 0;
+  }
+
+  sessionOpen = false;
+  quickModeChoiceActive = false;
+  quickModeChoiceStartedMs = 0;
+
+  if (off < FALSE_START_LIMIT_MS) {
+    const bool removed = discardCurrentFalseStart();
+    if (!removed) {
+      uiErrorTitle = "Verwijderen niet gelukt";
+      uiErrorDetail = "Valse start staat mogelijk nog op opslag";
+      state = AppState::ERROR;
+      screenDirty = true;
+      return;
+    }
+
+    audioError = false;
+    lastSessionFalseStart = true;
+    lastSessionSaved = false;
+    finishedAtMs = millis();
+    state = AppState::FINISHED;
+    screenDirty = true;
+    Serial.printf(
+        "RECORDER: false start s%05u discarded duration=%lums\n",
+        sessionId, (unsigned long)off);
+    return;
+  }
+
+  if (audioError) {
+    uiErrorTitle = "Opslaan niet gelukt";
+    uiErrorDetail = "Controleer de opslag bij Apparaatstatus";
+    state = AppState::ERROR;
+    screenDirty = true;
+    return;
+  }
+
+  lastSessionFalseStart = false;
+  lastSessionSaved = true;
   finishedAtMs = millis();
+  state = AppState::FINISHED;
   screenDirty = true;
 }
 
@@ -1087,11 +1210,15 @@ void goHome() {
   quickModeChoiceActive = false;
   visitPatientFlow = false;
   quickModeChoiceStartedMs = 0;
+  recordingToast[0] = '\0';
+  recordingToastUntilMs = 0;
   eventsPath[0] = wavTmpPath[0] = wavFinalPath[0] = '\0';
   sessionStartedMs = pauseStartedMs = totalPausedMs = finishedAtMs = 0;
+  patientSegmentStartOffsetMs = 0;
   patientNumber = segmentNumber = 1;
   markerCount = 0;
   state = AppState::HOME;
+  lastUserActivityMs = millis();
   screenDirty = true;
 }
 
