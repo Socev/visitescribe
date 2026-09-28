@@ -91,7 +91,7 @@ static const Rect SYNC_BACK      {16,190,288,42};
 
 enum class AppState : uint8_t {
   HOME, MODE_CONFIRM, RECORDING, PAUSED, SAVING, FINISHED,
-  MENU, STATUS, DETAILS, SYNC, ERROR
+  MENU, STATUS, DETAILS, SYNC, ERROR, CHARGE_SYNC
 };
 enum class Mode : uint8_t { VISIT, ROUND, MEETING };
 enum class QuickChoice : uint8_t { PATIENT, MEETING, STOP };
@@ -109,6 +109,11 @@ static bool (*vsSyncTouchLockedHook)() = nullptr;
 static uint32_t (*vsPendingCountHook)() = nullptr;
 static bool (*vsSyncRetryAllowedHook)() = nullptr;
 static bool (*vsSyncDoneHook)() = nullptr;
+static void (*vsChargeCancelHook)() = nullptr;
+static uint32_t chargeSyncStartedMs = 0;
+static bool chargeRiseBeingConfirmed = false;
+static constexpr uint32_t CHARGE_SYNC_DELAY_MS = 10000;
+
 
 bool sdOk = false;
 bool touchOk = false;
@@ -727,6 +732,19 @@ void drawSync() {
   }
 }
 
+static void drawChargeSync() {
+  drawHeader("Opladen");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(75, "Opladen...", C_NAVY, 2);
+  centeredText(105, "Sync wordt gestart", C_NAVY, 2);
+  const uint32_t used = millis() - chargeSyncStartedMs;
+  const uint32_t seconds = used < CHARGE_SYNC_DELAY_MS
+      ? (CHARGE_SYNC_DELAY_MS - used + 999) / 1000 : 0;
+  char text[24]; snprintf(text, sizeof(text), "%lu", (unsigned long)seconds);
+  centeredText(147, text, C_VIOLET, 3);
+  drawTouchButton(SYNC_BACK, "Afbreken", nullptr, true);
+}
+
 static void drawError() {
   drawHeader("");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
@@ -816,6 +834,7 @@ void render(bool force = false) {
     case AppState::STATUS: drawStatus(); break;
     case AppState::DETAILS: drawDetails(); break;
     case AppState::SYNC: drawSync(); break;
+    case AppState::CHARGE_SYNC: drawChargeSync(); break;
     case AppState::ERROR: drawError(); break;
   }
 }
@@ -1425,6 +1444,13 @@ void goHome() {
   screenDirty = true;
 }
 
+void cancelChargeSync() {
+  if (state != AppState::CHARGE_SYNC) return;
+  if (vsChargeCancelHook) vsChargeCancelHook();
+  chargeSyncStartedMs = 0;
+  goHome();
+}
+
 void wifiOff() {
   WiFi.disconnect(true, true);
   delay(20);
@@ -1492,6 +1518,9 @@ bool wakeOnlyIfOff() {
 
 void handleTouch(int x, int y) {
   switch (state) {
+    case AppState::CHARGE_SYNC:
+      if (SYNC_BACK.contains(x,y)) cancelChargeSync();
+      break;
     case AppState::HOME:
       // Pocket-first HOME deliberately ignores touch.
       break;
@@ -1592,7 +1621,9 @@ void serviceInputs() {
 void serviceDisplayPower() {
   // Sync is intentionally always visible. A user looking at upload progress
   // must never need to wake the display just to discover whether it finished.
-  if (state == AppState::SYNC) return;
+  if (state == AppState::SYNC || state == AppState::CHARGE_SYNC) return;
+  // Freeze an already-observed rise at its current display load for confirmation.
+  if (chargeRiseBeingConfirmed) return;
 
   // Keep the entire ten-second type chooser awake and touchable.
   if (quickModeChoiceActive) return;

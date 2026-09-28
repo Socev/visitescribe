@@ -1365,6 +1365,8 @@ static void vs067ServiceServerSync() {
   vsDrawServerSync(true);
 }
 
+#include "charge_autosync.h"
+
 void setup() {
   setup_v066_base();
 #ifdef VISITESCRIBE_DIRECT_OPUS
@@ -1382,6 +1384,7 @@ void loop() {
   // handshake. While active, do not run normal UI/Wi-Fi/server code so binary
   // file reads cannot be polluted by debug output.
   if (vsUsbSyncService()) {
+    vsSuspendChargeAutoSync();
     delay(1);
     return;
   }
@@ -1391,6 +1394,7 @@ void loop() {
   // v0.6.7 sync engine here.
   loop_v05();
   vs067ServiceServerSync();
+  vsServiceChargeAutoSync();
   // Never walk/delete SD files while recording, USB transfer or sync owns it.
   static uint32_t lastRetentionCheck = 0;
   if (state == AppState::HOME && !vsServerSyncRunning &&

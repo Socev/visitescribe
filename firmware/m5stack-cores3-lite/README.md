@@ -477,7 +477,19 @@ Bottom3 hardware check (2026-09-28): with USB disconnected, placement on the
 powered magnetic base raised battery voltage from about 4.07 V to 4.12 V; removal
 lowered it again. The user confirmed the base charge LED lit. Throughout both
 states, AXP2101 registers 0x00/0x01 stayed 24/85, VBUS stayed zero and charge status
-stayed -1 (discharge). The base's TP4057 charges independently. No dock trigger
-is inferred from battery voltage; load changes can produce similar movement.
-Automatic magnetic-dock sync is not implemented without a reliable detector.
+stayed -1 (discharge). The base's TP4057 charges independently. Battery voltage can indicate charging,
+but load changes can produce similar movement.
+Automatic sync now uses an idle battery-voltage heuristic, without hardware changes.
+After a stable display-load baseline, a rise of at least 25 mV must persist for
+10 seconds (at least 15 mV raw and 20 mV filtered above baseline). A 10-second
+"Opladen... / Sync wordt gestart" countdown then allows cancellation by touch
+or PWR. A USB power attachment observed while idle uses the same countdown;
+booting already connected to USB does not trigger it. Recording, network work,
+USB maintenance and POWERPROBE suspend detection. Display load changes reset
+the baseline; a candidate temporarily holds the existing display brightness,
+bounded to 30 seconds. Cancellation/starting latches detection until a sustained
+25 mV fall, or USB removal. Milestones are stored in charge_sync_log.csv.
+This is an indication, not proof of charging: full batteries, placement during
+recording or baseline collection, and small rises may be missed; unobserved
+load changes may cause false positives. Manual SYNC remains available.
 Official schematic: https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/531/M5GO3.pdf

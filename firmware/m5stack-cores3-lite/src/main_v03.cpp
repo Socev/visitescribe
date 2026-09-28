@@ -122,6 +122,9 @@ static void pocketOpenMenuV03() {
 
 static void pocketSinglePowerV03() {
   switch (state) {
+    case AppState::CHARGE_SYNC:
+      cancelChargeSync();
+      return;
     case AppState::SYNC: {
       if (vsSyncTouchLockedHook && vsSyncTouchLockedHook()) return;
       const bool resultScreen =
@@ -253,7 +256,12 @@ static void serviceInputsV03() {
     const AppState before = state;
     const uint32_t now = millis();
 
-    if (quickModeChoiceActive && state == AppState::RECORDING) {
+    if (state == AppState::CHARGE_SYNC) {
+      cancelChargeSync();
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      pwrWakeGuardUntilV03 = now + PWR_DOUBLE_CLICK_MS;
+    } else if (quickModeChoiceActive && state == AppState::RECORDING) {
       // While the ten-second chooser is visible, PWR is not interpreted as a
       // single/double-click gesture. Every physical press advances exactly one
       // visible choice: Patient -> Vergadering -> STOP -> Patient.
@@ -322,6 +330,7 @@ static void serviceInputsV03() {
        state == AppState::MENU ||
        state == AppState::STATUS ||
        state == AppState::DETAILS ||
+       state == AppState::CHARGE_SYNC ||
        syncTouchAllowed ||
        state == AppState::ERROR);
 
@@ -350,6 +359,7 @@ static void serviceInputsV03() {
     } else if (state == AppState::STATUS ||
                state == AppState::DETAILS ||
                state == AppState::SYNC ||
+               state == AppState::CHARGE_SYNC ||
                state == AppState::ERROR) {
       handleTouch(tx, ty);
     }
