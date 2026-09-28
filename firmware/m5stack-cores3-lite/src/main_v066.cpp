@@ -252,9 +252,16 @@ static void vsDrawServerSync(bool force = false) {
     return;
   }
 
-  String message = vsServerMessage;
-  if (message.length() > 46) message = message.substring(0, 46);
-  if (message.length()) centeredText(151, message.c_str(), C_GREY, 1);
+  const char* helper = "Even geduld";
+  if (vsServerStage == VsServerStage::UPLOAD_CHUNKS) {
+    helper = "Audio wordt verzonden";
+  } else if (vsServerStage == VsServerStage::CONFIRM ||
+             vsServerStage == VsServerStage::COMPLETE) {
+    helper = "Serverbevestiging wordt gecontroleerd";
+  } else if (vsServerStage == VsServerStage::EVENTS) {
+    helper = "Opnamegegevens worden afgerond";
+  }
+  centeredText(151, helper, C_GREY, 1);
 
   if (vsServerSyncRunning) {
     centeredText(174, "Opnames blijven op dit apparaat", C_GREY, 1);
