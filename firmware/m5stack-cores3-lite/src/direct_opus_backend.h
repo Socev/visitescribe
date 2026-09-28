@@ -802,4 +802,44 @@ static uint32_t vsDirectOpusDroppedFrames() {
   return vsDoDroppedFrames;
 }
 
+// Explicit user-requested false-start cleanup. This is only called after the
+// encoder worker has stopped, so no task or File handle can still reference
+// the session. Every file with this exact session prefix is removed; unrelated
+// recordings are untouched.
+static bool vsDirectOpusDiscardSession(uint16_t discardSessionId) {
+  char prefixBuf[16];
+  snprintf(prefixBuf, sizeof(prefixBuf), "s%05u", discardSessionId);
+  const String prefix(prefixBuf);
+
+  std::vector<String> removePaths;
+  File dir = SD.open("/visitescribe");
+  if (!dir) return false;
+
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    if (!f.isDirectory()) {
+      String name = f.name() ? String(f.name()) : String();
+      const int slash = name.lastIndexOf('/');
+      const String base = slash >= 0 ? name.substring(slash + 1) : name;
+      if (base.startsWith(prefix + "_")) {
+        removePaths.push_back(String("/visitescribe/") + base);
+      }
+    }
+    f.close();
+  }
+  dir.close();
+
+  bool ok = true;
+  if (!vsDirectOpusLockSd(pdMS_TO_TICKS(3000))) return false;
+  for (const auto& path : removePaths) {
+    if (SD.exists(path) && !SD.remove(path)) {
+      ok = false;
+      Serial.printf("DIRECT OPUS: false-start remove FAIL %s\n", path.c_str());
+    } else {
+      Serial.printf("DIRECT OPUS: false-start removed %s\n", path.c_str());
+    }
+  }
+  vsDirectOpusUnlockSd();
+  return ok;
+}
+
 #endif  // VISITESCRIBE_DIRECT_OPUS
