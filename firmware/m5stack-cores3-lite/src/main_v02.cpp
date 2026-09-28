@@ -1088,6 +1088,8 @@ bool startNewSession(Mode mode) {
   return true;
 }
 
+void stopSession();
+
 bool startQuickSession() {
   // Capture starts immediately. PATIENT is the default; the chooser remains
   // visible for ten seconds unless the user explicitly changes the selection.
