@@ -195,6 +195,11 @@ static void pocketSinglePowerV03() {
     return;
   }
 
+  // The gesture is now unambiguously a single click. Show feedback before
+  // synchronous SD/encoder/worker initialization; do not claim capture yet.
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(104, "Opname starten...", C_NAVY, 2);
   if (!startQuickSession()) {
     state = AppState::ERROR;
     if (!uiErrorTitle.length()) uiErrorTitle = "Opnemen niet mogelijk";
@@ -251,7 +256,7 @@ static void serviceInputsV03() {
     if (quickModeChoiceActive && state == AppState::RECORDING) {
       // While the ten-second chooser is visible, PWR is not interpreted as a
       // single/double-click gesture. Every physical press advances exactly one
-      // visible choice: Patiënt -> Vergadering -> STOP -> Patiënt.
+      // visible choice: Patient -> Vergadering -> STOP -> Patient.
       pwrClickPendingV03 = false;
       pwrFirstClickMsV03 = 0;
       pwrWakeGuardUntilV03 = 0;
@@ -285,6 +290,11 @@ static void serviceInputsV03() {
       } else {
         pwrClickPendingV03 = true;
         pwrFirstClickMsV03 = now;
+        if (state == AppState::HOME) {
+          M5.Display.fillRect(0, 147, SCREEN_W, 27, C_WHITE);
+          centeredText(160, "PWR ontvangen", C_BLUE, 1);
+          Serial.printf("PWR feedback latency=%lums\n", (unsigned long)(millis() - now));
+        }
         Serial.printf("PWR first-click pending app=%u\n", (unsigned)before);
       }
     }
@@ -293,6 +303,7 @@ static void serviceInputsV03() {
   if (pwrClickPendingV03 &&
       millis() - pwrFirstClickMsV03 > PWR_DOUBLE_CLICK_MS) {
     const AppState before = state;
+    Serial.printf("PWR single wait=%lums\n", (unsigned long)(millis() - pwrFirstClickMsV03));
     pwrClickPendingV03 = false;
     pwrFirstClickMsV03 = 0;
     pocketSinglePowerV03();

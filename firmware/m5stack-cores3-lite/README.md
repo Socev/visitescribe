@@ -303,3 +303,48 @@ Key behavior:
 
 The direct-Opus audio format, API v4 contract, retry/resume behavior and PC/USB
 sync protocol are unchanged by this UI work.
+
+
+## Direct-Opus rollover buffering and diagnostics
+
+A hardware trace on CoreS3-Lite showed a successful 30-second chunk close taking
+487 ms, followed by a successful next-chunk open taking 309 ms. The previous
+24-frame PCM queue covered only 480 ms. It filled during this normal rotation;
+the producer then timed out after 20 ms, latched a failure, and set `audioError`
+although the encoder worker remained ready and healthy. The earlier PCM bounds
+fix prevented memory corruption but did not solve this queue exhaustion.
+
+The queue now holds 128 frames (2.56 seconds) in a dedicated PSRAM allocation.
+Its FreeRTOS control block stays in internal RAM. The queue is allocated once
+and reused. One worker still owns the encoder and Ogg files; every 1500 source
+frames it finalizes the independent 30-second stream and opens the next one.
+There is no PCM/WAV master. Persistent stalls that exhaust this bounded queue
+still report a real recording error rather than silently losing audio.
+
+Serial diagnostics include close/open duration, queue depth/high-water mark,
+worker and producer flags, and named failure locations. Start diagnostics split
+storage setup, encoder/worker startup, and total startup time. HOME retains the
+350 ms single/double-click window but gives immediate first-press feedback and
+shows `Opname starten...` before synchronous initialization. The chooser labels
+use ASCII `Patient` and `Vergadering`, without a Patient subtitle. PWR during
+the ten-second chooser only cycles Patient -> Vergadering -> STOP -> Patient;
+expiry keeps the most recent actual recording mode, even when STOP is selected.
+
+Hardware regression procedure:
+
+1. Build `cores3-lite-direct-opus`, flash, and capture serial at 115200 baud.
+2. On HOME, double PWR must open Menu without starting a worker/recording.
+3. Return HOME, single PWR starts recording. In the chooser, use three separate
+   PWR presses to traverse Vergadering, STOP, Patient without stopping.
+4. Record for at least 100 seconds. Require chunks 1, 2, and 3 to CLOSE with
+   `frames=1500 duration=30000ms ok=1`, subsequent OPEN messages, `dropped=0`,
+   and no audioError, panic, or reboot. Display sleep must not stop recording.
+5. Wake the display with one PWR gesture; after the wake guard, stop with a new
+   single PWR. Require worker DONE with `failed=0`, `dropped=0`, and saved UI.
+6. Separately confirm that touching STOP within 10 seconds removes a false
+   start and that leaving STOP selected until chooser expiry continues capture.
+
+If the esptool upload stub cannot verify the flash connection, the installed
+esptool ROM path (`--before usb_reset --no-stub`) can program the application
+at 0x10000 on this existing partition layout; preserve bootloader, partition
+table, NVS and SD recordings. Require successful hash verification.

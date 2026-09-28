@@ -411,7 +411,7 @@ void drawHeader(const char* status, const char* sub = nullptr) {
 }
 
 const char* modeTitle(Mode m) {
-  if (m == Mode::VISIT) return "Patiënt";
+  if (m == Mode::VISIT) return "Patient";
   if (m == Mode::ROUND) return "Patientronde";
   return "Vergadering";
 }
@@ -454,7 +454,7 @@ void drawHome() {
 
   centeredText(74, "Klaar voor", C_NAVY, 3);
   centeredText(104, "opname", C_NAVY, 3);
-  centeredText(134, "Standaard: Patiënt", C_GREY, 1);
+  centeredText(134, "Standaard: Patient", C_GREY, 1);
 
   centeredText(160, "Lokaal klaar voor gebruik", C_GREY, 1);
   drawPwrHints("1x PWR  -  Start", "2x PWR  -  Menu");
@@ -492,7 +492,7 @@ void drawRecording() {
     Rect stopChoice{236, 160, 76, 24};
 
     drawTouchButton(
-        patientChoice, "Patiënt", "standaard", false,
+        patientChoice, "Patient", nullptr, false,
         quickChoice == QuickChoice::PATIENT);
     drawTouchButton(
         meetingChoice, "Vergadering", nullptr, false,
@@ -537,7 +537,7 @@ void drawRecording() {
   if (selectedMode == Mode::MEETING) {
     snprintf(context, sizeof(context), "Vergadering");
   } else {
-    snprintf(context, sizeof(context), "Patiënt %u", patientNumber);
+    snprintf(context, sizeof(context), "Patient %u", patientNumber);
   }
   centeredText(84, context, C_NAVY, 2);
 
@@ -562,7 +562,7 @@ void drawRecording() {
       "1x PWR  -  Stop",
       selectedMode == Mode::MEETING
           ? "2x PWR  -  Markeer"
-          : "2x PWR  -  Volgende patiënt");
+          : "2x PWR  -  Volgende patient");
   lastUiSecond = activeElapsedMs() / 1000;
 }
 
@@ -605,9 +605,9 @@ void drawFinished() {
     if (selectedMode == Mode::MEETING) {
       snprintf(context, sizeof(context), "Vergadering");
     } else if (patientNumber <= 1) {
-      snprintf(context, sizeof(context), "Patiënt - 1");
+      snprintf(context, sizeof(context), "Patient - 1");
     } else {
-      snprintf(context, sizeof(context), "Patiënten - %u", patientNumber);
+      snprintf(context, sizeof(context), "Patienten - %u", patientNumber);
     }
     centeredText(146, context, C_NAVY, 1);
     centeredText(166, "Nog te verzenden", C_VIOLET, 1);
@@ -942,6 +942,7 @@ void serviceAudio() {
 #ifdef VISITESCRIBE_DIRECT_OPUS
     if (done.data && done.samples) {
       if (!vsDirectOpusConsumeStereo(done.data, done.samples)) {
+        if (!audioError) vsDoTrace("audioError: consumeStereo");
         audioError = true;
       }
     }
@@ -954,6 +955,7 @@ void serviceAudio() {
     }
 #endif
     if (captureRunning && done.data && !queueAudio(done.data)) {
+      Serial.printf("RECORDER: audioError microphone requeue t=%lu\n", (unsigned long)millis());
       audioError = true;
     }
   }
@@ -1033,6 +1035,7 @@ static bool discardCurrentFalseStart() {
 }
 
 bool startNewSession(Mode mode) {
+  const uint32_t startMs = millis();
   if (!sdOk) return false;
   selectedMode = mode;
   sessionId = findNextSessionId();
@@ -1065,13 +1068,17 @@ bool startNewSession(Mode mode) {
   events.println("elapsed_ms,event,patient,segment,markers,audio_file");
   events.close();
 
+  Serial.printf("RECORDER: start storage=%lums\n", (unsigned long)(millis() - startMs));
+  const uint32_t encoderStartMs = millis();
   if (!openWavSegment()) {
     sessionOpen = false;
     uiErrorTitle = "Opnemen niet mogelijk";
     uiErrorDetail = "Audiobestand kon niet starten";
     return false;
   }
+  Serial.printf("RECORDER: start encoder/worker=%lums\n", (unsigned long)(millis() - encoderStartMs));
   logEvent("session_started", 0);
+  sessionStartedMs = millis();
   if (!startCapture()) {
     finalizeWavSegment();
     sessionOpen = false;
@@ -1079,6 +1086,7 @@ bool startNewSession(Mode mode) {
     uiErrorDetail = "Microfoon kon niet starten";
     return false;
   }
+  Serial.printf("RECORDER: start total=%lums\n", (unsigned long)(millis() - startMs));
   state = AppState::RECORDING;
   screenDirty = true;
   return true;
@@ -1100,6 +1108,7 @@ bool startQuickSession() {
     quickModeChoiceStartedMs = 0;
     return false;
   }
+  quickModeChoiceStartedMs = millis();
   return true;
 }
 
@@ -1229,7 +1238,7 @@ void addMarkerOrNext() {
     state = AppState::RECORDING;
     logEvent("patient_started", off);
     char toast[48];
-    snprintf(toast, sizeof(toast), "Patiënt %u gestart", patientNumber);
+    snprintf(toast, sizeof(toast), "Patient %u gestart", patientNumber);
     setRecordingToast(toast);
   } else {
     ++markerCount;

@@ -41,7 +41,10 @@ static constexpr uint32_t VS_DO_FRAMES_PER_CHUNK =
     30000 / VS_DO_FRAME_MS;              // 1500
 static constexpr uint8_t VS_DO_PACKETS_PER_PAGE = 10;
 static constexpr size_t VS_DO_MAX_PACKET = 512;
-static constexpr uint8_t VS_DO_QUEUE_FRAMES = 24;
+// Hardware: close+open at rollover took 487+309 ms (40 incoming frames).
+// Reserve 2.56 s in PSRAM so SD stalls do not exhaust the old 480 ms queue.
+// This is a bounded transient FIFO, never a PCM/WAV master.
+static constexpr uint8_t VS_DO_QUEUE_FRAMES = 128;
 static constexpr uint32_t VS_DO_WORKER_STACK = 32768;
 static constexpr BaseType_t VS_DO_WORKER_CORE = 0;
 static constexpr UBaseType_t VS_DO_WORKER_PRIORITY = 1;
@@ -147,6 +150,9 @@ struct VsDoQueueItem {
 };
 
 static QueueHandle_t vsDoQueue = nullptr;
+static StaticQueue_t vsDoQueueControl;
+static uint8_t* vsDoQueueStorage = nullptr;
+static volatile uint32_t vsDoQueueHighWater = 0;
 static TaskHandle_t vsDoWorkerHandle = nullptr;
 static SemaphoreHandle_t vsDoSdMutex = nullptr;
 
@@ -218,12 +224,32 @@ static void vsDoPutLe64(uint8_t* dst, uint64_t value) {
   for (int i = 0; i < 8; ++i) dst[i] = (value >> (8 * i)) & 0xFF;
 }
 
+// Both tasks may log flags/queue depth; only the worker inspects File/encoder.
+static void vsDoTrace(const char* event) {
+  Serial.printf("DIRECT OPUS: t=%lu %s chunk=%lu frames=%lu queue=%u ready=%d done=%d failed=%d producer_failed=%d dropped=%lu highwater=%lu/%u\n",
+      (unsigned long)millis(), event, (unsigned long)vsDoChunkSequence,
+      (unsigned long)vsDoEncodedFrames,
+      (unsigned)(vsDoQueue ? uxQueueMessagesWaiting(vsDoQueue) : 0),
+      vsDoWorkerReady, vsDoWorkerDone, vsDoWorkerFailed, vsDoProducerFailed,
+      (unsigned long)vsDoDroppedFrames, (unsigned long)vsDoQueueHighWater,
+      (unsigned)VS_DO_QUEUE_FRAMES);
+}
+
+static bool vsDoFail(const char* reason, int line) {
+  Serial.printf("DIRECT OPUS: FAIL reason=%s line=%d\n", reason, line);
+  vsDoTrace("failure-state");
+  return false;
+}
+
 static bool vsDirectOpusLockSd(TickType_t wait = pdMS_TO_TICKS(1000)) {
   if (!vsDoSdMutex) {
     vsDoSdMutex = xSemaphoreCreateMutex();
-    if (!vsDoSdMutex) return false;
+    if (!vsDoSdMutex) return vsDoFail("vsDirectOpusLockSd", __LINE__);
   }
-  return xSemaphoreTake(vsDoSdMutex, wait) == pdTRUE;
+  if (xSemaphoreTake(vsDoSdMutex, wait) != pdTRUE) {
+    return vsDoFail("SD mutex timeout", __LINE__);
+  }
+  return true;
 }
 
 static void vsDirectOpusUnlockSd() {
@@ -235,7 +261,7 @@ static bool vsDoWriteOggPage(const uint8_t* const* packets,
                              uint8_t packetCount,
                              uint8_t flags,
                              int64_t granule) {
-  if (!vsDoFile || packetCount == 0) return false;
+  if (!vsDoFile || packetCount == 0) return vsDoFail("vsDoWriteOggPage", __LINE__);
 
   uint8_t lacing[VS_DO_PACKETS_PER_PAGE * 4] = {0};
   size_t laceCount = 0;
@@ -245,17 +271,17 @@ static bool vsDoWriteOggPage(const uint8_t* const* packets,
     uint16_t left = lengths[p];
     bodyBytes += left;
     while (left >= 255) {
-      if (laceCount >= sizeof(lacing)) return false;
+      if (laceCount >= sizeof(lacing)) return vsDoFail("vsDoWriteOggPage", __LINE__);
       lacing[laceCount++] = 255;
       left -= 255;
     }
-    if (laceCount >= sizeof(lacing)) return false;
+    if (laceCount >= sizeof(lacing)) return vsDoFail("vsDoWriteOggPage", __LINE__);
     lacing[laceCount++] = static_cast<uint8_t>(left);
   }
 
   const size_t headerBytes = 27 + laceCount;
   const size_t totalBytes = headerBytes + bodyBytes;
-  if (totalBytes > sizeof(vsDoOggPageBuffer)) return false;
+  if (totalBytes > sizeof(vsDoOggPageBuffer)) return vsDoFail("vsDoWriteOggPage", __LINE__);
 
   uint8_t* out = vsDoOggPageBuffer;
   memset(out, 0, headerBytes);
@@ -278,10 +304,11 @@ static bool vsDoWriteOggPage(const uint8_t* const* packets,
   const uint32_t crc = vsDoOggCrc(out, totalBytes);
   vsDoPutLe32(out + 22, crc);
 
-  if (!vsDirectOpusLockSd()) return false;
+  if (!vsDirectOpusLockSd()) return vsDoFail("vsDoWriteOggPage", __LINE__);
   const size_t written = vsDoFile.write(out, totalBytes);
   vsDirectOpusUnlockSd();
-  return written == totalBytes;
+  if (written != totalBytes) return vsDoFail("SD short Ogg write", __LINE__);
+  return true;
 }
 
 static bool vsDoWriteSinglePacketPage(const uint8_t* packet,
@@ -303,7 +330,7 @@ static bool vsDoWriteHeaders() {
   vsDoPutLe16(head + 16, 0); // output gain Q7.8
   head[18] = 0;              // channel mapping family 0
 
-  if (!vsDoWriteSinglePacketPage(head, sizeof(head), 0x02, 0)) return false;
+  if (!vsDoWriteSinglePacketPage(head, sizeof(head), 0x02, 0)) return vsDoFail("vsDoWriteHeaders", __LINE__);
 
   static const char vendor[] = "VisiteScribe-M5";
   const uint32_t vendorLen = sizeof(vendor) - 1;
@@ -353,7 +380,7 @@ static bool vsDoOpenEncoder() {
   if (rc != ESP_AUDIO_ERR_OK || !vsDoEncoder) {
     Serial.printf("DIRECT OPUS: encoder open FAIL rc=%d\n", (int)rc);
     vsDoEncoder = nullptr;
-    return false;
+    return vsDoFail("vsDoOpenEncoder", __LINE__);
   }
 
   int inBytes = 0;
@@ -370,7 +397,7 @@ static bool vsDoOpenEncoder() {
         (unsigned)(VS_DO_FRAME_SAMPLES * sizeof(int16_t)));
     esp_opus_enc_close(vsDoEncoder);
     vsDoEncoder = nullptr;
-    return false;
+    return vsDoFail("vsDoOpenEncoder", __LINE__);
   }
 
   return true;
@@ -411,6 +438,8 @@ static void vsDoAppendChunkMeta(uint32_t sequence,
 static bool vsDoEncodeTailPacket();
 
 static bool vsDoOpenChunk() {
+  const uint32_t startedMs = millis();
+  vsDoTrace("chunk-open begin");
   ++vsDoChunkSequence;
   vsDoOggSerial =
       0x56530000U ^
@@ -427,11 +456,11 @@ static bool vsDoOpenChunk() {
            (unsigned long)vsDoChunkSequence);
   snprintf(vsDoTmpPath, sizeof(vsDoTmpPath), "%s.tmp", vsDoFinalPath);
 
-  if (!vsDirectOpusLockSd()) return false;
+  if (!vsDirectOpusLockSd()) return vsDoFail("vsDoOpenChunk", __LINE__);
   if (SD.exists(vsDoTmpPath)) SD.remove(vsDoTmpPath);
   vsDoFile = SD.open(vsDoTmpPath, FILE_WRITE);
   vsDirectOpusUnlockSd();
-  if (!vsDoFile) return false;
+  if (!vsDoFile) return vsDoFail("SD chunk open", __LINE__);
 
   if (!vsDoOpenEncoder()) {
     if (vsDirectOpusLockSd()) {
@@ -439,7 +468,7 @@ static bool vsDoOpenChunk() {
       SD.remove(vsDoTmpPath);
       vsDirectOpusUnlockSd();
     }
-    return false;
+    return vsDoFail("vsDoOpenChunk", __LINE__);
   }
 
   if (!vsDoWriteHeaders()) {
@@ -449,8 +478,11 @@ static bool vsDoOpenChunk() {
       SD.remove(vsDoTmpPath);
       vsDirectOpusUnlockSd();
     }
-    return false;
+    return vsDoFail("vsDoOpenChunk", __LINE__);
   }
+
+  Serial.printf("DIRECT OPUS: chunk-open end elapsed=%lums file=%d encoder=%d\n",
+                (unsigned long)(millis() - startedMs), !!vsDoFile, !!vsDoEncoder);
 
   // Existing event CSV has an audio_file column. Keep it useful for diagnostics.
   strncpy(wavFinalPath, vsDoFinalPath, sizeof(wavFinalPath) - 1);
@@ -463,6 +495,8 @@ static bool vsDoOpenChunk() {
 }
 
 static bool vsDoFinalizeChunk() {
+  const uint32_t startedMs = millis();
+  vsDoTrace("chunk-finalize begin");
   if (!vsDoFile) {
     vsDoCloseEncoder();
     return true;
@@ -484,7 +518,10 @@ static bool vsDoFinalizeChunk() {
       SD.remove(vsDoTmpPath);
     } else {
       if (SD.exists(vsDoFinalPath)) SD.remove(vsDoFinalPath);
-      if (!SD.rename(vsDoTmpPath, vsDoFinalPath)) ok = false;
+      if (!SD.rename(vsDoTmpPath, vsDoFinalPath)) {
+        vsDoFail("SD chunk rename", __LINE__);
+        ok = false;
+      }
     }
     vsDirectOpusUnlockSd();
   } else {
@@ -509,7 +546,10 @@ static bool vsDoFinalizeChunk() {
         ok ? 1 : 0);
   }
 
+  vsDoTrace("encoder-close begin");
   vsDoCloseEncoder();
+  Serial.printf("DIRECT OPUS: chunk-finalize end elapsed=%lums file=%d encoder=%d ok=%d\n",
+                (unsigned long)(millis() - startedMs), !!vsDoFile, !!vsDoEncoder, ok);
   vsDoChunkFrames = 0;
   vsDoPagePacketCount = 0;
   return ok;
@@ -538,11 +578,11 @@ static bool vsDoEncodeTailPacket() {
       output.encoded_bytes > static_cast<int>(VS_DO_MAX_PACKET)) {
     Serial.printf("DIRECT OPUS: tail encode FAIL rc=%d bytes=%d\n",
                   (int)rc, output.encoded_bytes);
-    return false;
+    return vsDoFail("vsDoEncodeTailPacket", __LINE__);
   }
 
   if (vsDoPagePacketCount >= VS_DO_PACKETS_PER_PAGE) {
-    if (!vsDoFlushAudioPage(false)) return false;
+    if (!vsDoFlushAudioPage(false)) return vsDoFail("vsDoEncodeTailPacket", __LINE__);
   }
 
   const uint8_t slot = vsDoPagePacketCount++;
@@ -559,8 +599,8 @@ static bool vsDoEncodeTailPacket() {
 }
 
 static bool vsDoEncodeFrame(const int16_t pcm[VS_DO_FRAME_SAMPLES]) {
-  if (!vsDoFile && !vsDoOpenChunk()) return false;
-  if (!vsDoEncoder) return false;
+  if (!vsDoFile && !vsDoOpenChunk()) return vsDoFail("vsDoEncodeFrame", __LINE__);
+  if (!vsDoEncoder) return vsDoFail("encoder missing", __LINE__);
 
   uint8_t packet[VS_DO_MAX_PACKET] = {0};
   esp_audio_enc_in_frame_t input = {};
@@ -584,13 +624,13 @@ static bool vsDoEncodeFrame(const int16_t pcm[VS_DO_FRAME_SAMPLES]) {
         "DIRECT OPUS: encode FAIL rc=%d bytes=%d frame=%lu\n",
         (int)rc, output.encoded_bytes,
         (unsigned long)vsDoEncodedFrames);
-    return false;
+    return vsDoFail("vsDoEncodeFrame", __LINE__);
   }
 
   // If the current Ogg page is already full, flush it before the new packet.
   // This guarantees that only the actual final page receives EOS.
   if (vsDoPagePacketCount >= VS_DO_PACKETS_PER_PAGE) {
-    if (!vsDoFlushAudioPage(false)) return false;
+    if (!vsDoFlushAudioPage(false)) return vsDoFail("vsDoEncodeFrame", __LINE__);
   }
 
   const uint8_t slot = vsDoPagePacketCount++;
@@ -615,7 +655,7 @@ static bool vsDoEncodeFrame(const int16_t pcm[VS_DO_FRAME_SAMPLES]) {
   if (vsDoChunkFrames >= VS_DO_FRAMES_PER_CHUNK) {
     // Exactly 30 seconds. The next incoming frame will open a fresh encoder
     // and fresh self-contained Ogg stream.
-    if (!vsDoFinalizeChunk()) return false;
+    if (!vsDoFinalizeChunk()) return vsDoFail("vsDoEncodeFrame", __LINE__);
   }
   return true;
 }
@@ -628,7 +668,7 @@ static void vsDoWorker(void*) {
   // initialization latency out of the first live audio frame.
   if (!vsDoOpenChunk()) {
     vsDoWorkerFailed = true;
-    vsDoWorkerReady = true;
+    vsDoWorkerReady = false;
     vsDoWorkerDone = true;
     vsDoWorkerHandle = nullptr;
     vTaskDelete(nullptr);
@@ -648,6 +688,7 @@ static void vsDoWorker(void*) {
     if (item.kind == 1) break;
     if (!vsDoEncodeFrame(item.pcm)) {
       vsDoWorkerFailed = true;
+      vsDoTrace("worker encode failed");
       break;
     }
   }
@@ -690,13 +731,24 @@ static void vsDirectOpusResetSession(uint16_t newSessionId) {
 static bool vsDirectOpusBeginSegment() {
   if (!vsDoSdMutex) {
     vsDoSdMutex = xSemaphoreCreateMutex();
-    if (!vsDoSdMutex) return false;
+    if (!vsDoSdMutex) return vsDoFail("vsDirectOpusBeginSegment", __LINE__);
   }
   if (!vsDoQueue) {
-    vsDoQueue = xQueueCreate(VS_DO_QUEUE_FRAMES, sizeof(VsDoQueueItem));
-    if (!vsDoQueue) return false;
+    // Static FreeRTOS queue control stays in internal RAM. Only PCM storage
+    // lives in PSRAM; neither producer nor worker accesses it from an ISR.
+    // Use calloc: the inherited sync layer intercepts heap_caps_malloc().
+    if (!vsDoQueueStorage) {
+      vsDoQueueStorage = static_cast<uint8_t*>(heap_caps_calloc(
+          VS_DO_QUEUE_FRAMES, sizeof(VsDoQueueItem),
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!vsDoQueueStorage) return vsDoFail("PCM PSRAM allocation", __LINE__);
+    vsDoQueue = xQueueCreateStatic(VS_DO_QUEUE_FRAMES, sizeof(VsDoQueueItem),
+                                 vsDoQueueStorage, &vsDoQueueControl);
+    if (!vsDoQueue) return vsDoFail("vsDirectOpusBeginSegment", __LINE__);
   }
   xQueueReset(vsDoQueue);
+  vsDoQueueHighWater = 0;
 
   vsDoDownsampleSum = 0;
   vsDoDownsampleFrames = 0;
@@ -717,7 +769,7 @@ static bool vsDirectOpusBeginSegment() {
   if (created != pdPASS) {
     vsDoWorkerHandle = nullptr;
     vsDoWorkerDone = true;
-    return false;
+    return vsDoFail("vsDirectOpusBeginSegment", __LINE__);
   }
 
   const uint32_t deadline = millis() + 5000;
@@ -726,7 +778,8 @@ static bool vsDirectOpusBeginSegment() {
     delay(5);
   }
 
-  if (!vsDoWorkerReady || vsDoWorkerFailed) return false;
+  if (!vsDoWorkerReady || vsDoWorkerFailed) return vsDoFail("worker startup timeout/failure", __LINE__);
+  vsDoTrace("segment ready");
   return true;
 }
 
@@ -736,7 +789,7 @@ static bool vsDirectOpusReady() {
 
 static bool vsDoQueuePcmFrame() {
   if (!vsDoQueue || !vsDoWorkerReady || vsDoWorkerFailed || vsDoWorkerDone) {
-    return false;
+    return vsDoFail("PCM worker unavailable", __LINE__);
   }
 
   VsDoQueueItem item;
@@ -746,8 +799,10 @@ static bool vsDoQueuePcmFrame() {
   // Never block indefinitely if the encoder or SD has failed.
   if (xQueueSend(vsDoQueue, &item, pdMS_TO_TICKS(VS_DO_FRAME_MS)) != pdTRUE) {
     ++vsDoDroppedFrames;
-    return false;
+    return vsDoFail("PCM queue full after 20ms", __LINE__);
   }
+  const uint32_t depth = uxQueueMessagesWaiting(vsDoQueue);
+  if (depth > vsDoQueueHighWater) vsDoQueueHighWater = depth;
   return true;
 }
 
@@ -757,7 +812,7 @@ static bool vsDirectOpusConsumeStereo(const int16_t* samples, size_t count) {
   if (vsDoPcmFill >= VS_DO_FRAME_SAMPLES) {
     vsDoPcmFill = 0;
     vsDoProducerFailed = true;
-    return false;
+    return vsDoFail("vsDirectOpusConsumeStereo", __LINE__);
   }
 
   const size_t frames = count / 2;
@@ -781,7 +836,7 @@ static bool vsDirectOpusConsumeStereo(const int16_t* samples, size_t count) {
         vsDoPcmFill = 0;
         if (!vsDoQueuePcmFrame()) {
           vsDoProducerFailed = true;
-          return false;
+          return vsDoFail("vsDirectOpusConsumeStereo", __LINE__);
         }
       }
     }
@@ -803,7 +858,7 @@ static bool vsDirectOpusFinishSegment() {
     stop.kind = 1;
     if (xQueueSend(vsDoQueue, &stop, pdMS_TO_TICKS(3000)) != pdTRUE) {
       Serial.println("DIRECT OPUS: stop sentinel queue timeout");
-      return false;
+      return vsDoFail("vsDirectOpusFinishSegment", __LINE__);
     }
 
     const uint32_t deadline = millis() + 8000;
@@ -813,7 +868,8 @@ static bool vsDirectOpusFinishSegment() {
     }
   }
 
-  return vsDoWorkerDone && !vsDoWorkerFailed && vsDoDroppedFrames == 0;
+  vsDoTrace("segment finish");
+  return vsDoWorkerDone && !vsDoWorkerFailed && !vsDoProducerFailed && vsDoDroppedFrames == 0;
 }
 
 static uint32_t vsDirectOpusDroppedFrames() {
