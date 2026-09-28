@@ -42,9 +42,10 @@ static constexpr uint32_t VS_DO_FRAMES_PER_CHUNK =
 static constexpr uint8_t VS_DO_PACKETS_PER_PAGE = 10;
 static constexpr size_t VS_DO_MAX_PACKET = 512;
 // Hardware: close+open at rollover took 487+309 ms (40 incoming frames).
-// Reserve 2.56 s in PSRAM so SD stalls do not exhaust the old 480 ms queue.
+// Reserve 10.24 s in PSRAM to absorb longer SD stalls seen in field use.
+// This increases tolerance; a persistent media failure must still be reported.
 // This is a bounded transient FIFO, never a PCM/WAV master.
-static constexpr uint8_t VS_DO_QUEUE_FRAMES = 128;
+static constexpr uint16_t VS_DO_QUEUE_FRAMES = 512;
 static constexpr uint32_t VS_DO_WORKER_STACK = 32768;
 static constexpr BaseType_t VS_DO_WORKER_CORE = 0;
 static constexpr UBaseType_t VS_DO_WORKER_PRIORITY = 1;
@@ -183,6 +184,17 @@ static char vsDoFinalPath[128] = {0};
 static uint32_t vsDoOggSerial = 0;
 static uint32_t vsDoOggPageSequence = 0;
 static uint32_t vsDoChunkFrames = 0;
+static uint32_t vsDoLastFlushMs = 0;
+static const char* volatile vsDoStage = "idle";
+static portMUX_TYPE vsDoFaultMux = portMUX_INITIALIZER_UNLOCKED;
+struct VsDoFault {
+  const char* reason = nullptr;
+  const char* stage = nullptr;
+  int line = 0;
+  uint32_t atMs = 0, frames = 0, queue = 0;
+};
+static VsDoFault vsDoFirstFault;
+
 
 static uint8_t vsDoPagePacketData[VS_DO_PACKETS_PER_PAGE][VS_DO_MAX_PACKET];
 static uint16_t vsDoPagePacketLen[VS_DO_PACKETS_PER_PAGE] = {0};
@@ -236,6 +248,14 @@ static void vsDoTrace(const char* event) {
 }
 
 static bool vsDoFail(const char* reason, int line) {
+  const uint32_t depth = vsDoQueue ? uxQueueMessagesWaiting(vsDoQueue) : 0;
+  portENTER_CRITICAL(&vsDoFaultMux);
+  if (!vsDoFirstFault.reason) {
+    vsDoFirstFault.reason = reason; vsDoFirstFault.stage = vsDoStage;
+    vsDoFirstFault.line = line; vsDoFirstFault.atMs = millis();
+    vsDoFirstFault.frames = vsDoEncodedFrames; vsDoFirstFault.queue = depth;
+  }
+  portEXIT_CRITICAL(&vsDoFaultMux);
   Serial.printf("DIRECT OPUS: FAIL reason=%s line=%d\n", reason, line);
   vsDoTrace("failure-state");
   return false;
@@ -305,7 +325,16 @@ static bool vsDoWriteOggPage(const uint8_t* const* packets,
   vsDoPutLe32(out + 22, crc);
 
   if (!vsDirectOpusLockSd()) return vsDoFail("vsDoWriteOggPage", __LINE__);
+  vsDoStage = "ogg-write";
   const size_t written = vsDoFile.write(out, totalBytes);
+  // Publish file length/allocation regularly; an open FAT file can otherwise
+  // remain zero bytes on disk across reset, even after many packet writes.
+  if (millis() - vsDoLastFlushMs >= 1000) {
+    vsDoStage = "checkpoint-flush";
+    vsDoFile.flush();
+    vsDoLastFlushMs = millis();
+  }
+  vsDoStage = "encode";
   vsDirectOpusUnlockSd();
   if (written != totalBytes) return vsDoFail("SD short Ogg write", __LINE__);
   return true;
@@ -410,7 +439,7 @@ static void vsDoCloseEncoder() {
   }
 }
 
-static void vsDoAppendChunkMeta(uint32_t sequence,
+static bool vsDoAppendChunkMeta(uint32_t sequence,
                                 const char* finalPath,
                                 uint32_t durationMs,
                                 uint32_t bytes) {
@@ -418,26 +447,30 @@ static void vsDoAppendChunkMeta(uint32_t sequence,
   snprintf(metaPath, sizeof(metaPath),
            "/visitescribe/s%05u_opus.csv", vsDoSeenSessionId);
 
-  if (!vsDirectOpusLockSd()) return;
+  if (!vsDirectOpusLockSd()) return vsDoFail("metadata mutex", __LINE__);
+  bool ok = true;
   const bool exists = SD.exists(metaPath);
   File meta = SD.open(metaPath, FILE_APPEND);
   if (meta) {
     if (!exists || meta.size() == 0) {
-      meta.println("sequence,path,duration_ms,bytes");
+      ok = meta.println("sequence,path,duration_ms,bytes") > 0;
     }
-    meta.printf("%lu,%s,%lu,%lu\n",
+    if (!meta.printf("%lu,%s,%lu,%lu\n",
                 (unsigned long)sequence,
                 finalPath,
                 (unsigned long)durationMs,
-                (unsigned long)bytes);
-    meta.close();
-  }
+                (unsigned long)bytes)) ok = false;
+    meta.flush(); meta.close();
+  } else ok = false;
   vsDirectOpusUnlockSd();
+  if (!ok) return vsDoFail("chunk metadata write", __LINE__);
+  return true;
 }
 
 static bool vsDoEncodeTailPacket();
 
 static bool vsDoOpenChunk() {
+  vsDoStage = "chunk-open";
   const uint32_t startedMs = millis();
   vsDoTrace("chunk-open begin");
   ++vsDoChunkSequence;
@@ -462,6 +495,7 @@ static bool vsDoOpenChunk() {
   vsDirectOpusUnlockSd();
   if (!vsDoFile) return vsDoFail("SD chunk open", __LINE__);
 
+  vsDoStage = "encoder-open";
   if (!vsDoOpenEncoder()) {
     if (vsDirectOpusLockSd()) {
       vsDoFile.close();
@@ -471,6 +505,7 @@ static bool vsDoOpenChunk() {
     return vsDoFail("vsDoOpenChunk", __LINE__);
   }
 
+  vsDoStage = "ogg-headers";
   if (!vsDoWriteHeaders()) {
     vsDoCloseEncoder();
     if (vsDirectOpusLockSd()) {
@@ -495,6 +530,7 @@ static bool vsDoOpenChunk() {
 }
 
 static bool vsDoFinalizeChunk() {
+  vsDoStage = "chunk-finalize";
   const uint32_t startedMs = millis();
   vsDoTrace("chunk-finalize begin");
   if (!vsDoFile) {
@@ -510,6 +546,7 @@ static bool vsDoFinalizeChunk() {
 
   uint32_t physical = 0;
   if (vsDirectOpusLockSd()) {
+    vsDoStage = "chunk-close-flush";
     vsDoFile.flush();
     physical = static_cast<uint32_t>(vsDoFile.size());
     vsDoFile.close();
@@ -534,7 +571,7 @@ static bool vsDoFinalizeChunk() {
     // was closed and atomically renamed successfully. A failed .tmp remains on
     // the card for diagnosis/recovery instead of becoming a bogus upload row.
     if (ok) {
-      vsDoAppendChunkMeta(
+      ok = vsDoAppendChunkMeta(
           vsDoChunkSequence, vsDoFinalPath, durationMs, physical);
     }
     Serial.printf(
@@ -546,6 +583,7 @@ static bool vsDoFinalizeChunk() {
         ok ? 1 : 0);
   }
 
+  vsDoStage = "encoder-close";
   vsDoTrace("encoder-close begin");
   vsDoCloseEncoder();
   Serial.printf("DIRECT OPUS: chunk-finalize end elapsed=%lums file=%d encoder=%d ok=%d\n",
@@ -713,6 +751,9 @@ static void vsDirectOpusResetSession(uint16_t newSessionId) {
   vsDoSeenSessionId = newSessionId;
   vsDoChunkSequence = 0;
   vsDoDroppedFrames = 0;
+  portENTER_CRITICAL(&vsDoFaultMux);
+  vsDoFirstFault = VsDoFault();
+  portEXIT_CRITICAL(&vsDoFaultMux);
   vsDoEncodedFrames = 0;
   vsDoEncodedBytes = 0;
   vsDoDownsampleSum = 0;
@@ -729,6 +770,10 @@ static void vsDirectOpusResetSession(uint16_t newSessionId) {
 }
 
 static bool vsDirectOpusBeginSegment() {
+  if (!vsDoWorkerDone) return vsDoFail("previous worker still running", __LINE__);
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  Serial.setTxTimeoutMs(10); // debug output must not hold up live capture
+#endif
   if (!vsDoSdMutex) {
     vsDoSdMutex = xSemaphoreCreateMutex();
     if (!vsDoSdMutex) return vsDoFail("vsDirectOpusBeginSegment", __LINE__);
@@ -868,6 +913,9 @@ static bool vsDirectOpusFinishSegment() {
     }
   }
 
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  if (vsDoWorkerDone) Serial.setTxTimeoutMs(100); // normal USB sync throughput
+#endif
   vsDoTrace("segment finish");
   return vsDoWorkerDone && !vsDoWorkerFailed && !vsDoProducerFailed && vsDoDroppedFrames == 0;
 }
@@ -916,4 +964,23 @@ static bool vsDirectOpusDiscardSession(uint16_t discardSessionId) {
   return ok;
 }
 
+static void vsDoPersistFailure() {
+  VsDoFault fault;
+  portENTER_CRITICAL(&vsDoFaultMux); fault = vsDoFirstFault; portEXIT_CRITICAL(&vsDoFaultMux);
+  char path[80]; snprintf(path, sizeof(path), "/visitescribe/s%05u_failure.txt", vsDoSeenSessionId);
+  if (!vsDirectOpusLockSd(pdMS_TO_TICKS(3000))) return;
+  File f = SD.open(path, FILE_WRITE);
+  if (f) {
+    f.printf("reason=%s\nline=%d\nstage=%s\nat_ms=%lu\nframes_at_error=%lu\nqueue_at_error=%lu\nqueue_highwater=%lu\nqueue_capacity=%u\ndropped=%lu\nworker_done=%d\nworker_failed=%d\nproducer_failed=%d\n",
+        fault.reason ? fault.reason : "microphone-or-capture", fault.line,
+        fault.stage ? fault.stage : "unknown", (unsigned long)fault.atMs,
+        (unsigned long)fault.frames, (unsigned long)fault.queue,
+        (unsigned long)vsDoQueueHighWater, (unsigned)VS_DO_QUEUE_FRAMES,
+        (unsigned long)vsDoDroppedFrames, vsDoWorkerDone, vsDoWorkerFailed, vsDoProducerFailed);
+    f.flush(); f.close();
+  }
+  vsDirectOpusUnlockSd();
+}
+
+#include "direct_opus_recovery.h"
 #endif  // VISITESCRIBE_DIRECT_OPUS

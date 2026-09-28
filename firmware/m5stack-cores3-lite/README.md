@@ -314,7 +314,7 @@ the producer then timed out after 20 ms, latched a failure, and set `audioError`
 although the encoder worker remained ready and healthy. The earlier PCM bounds
 fix prevented memory corruption but did not solve this queue exhaustion.
 
-The queue now holds 128 frames (2.56 seconds) in a dedicated PSRAM allocation.
+The queue now holds 512 frames (10.24 seconds) in a dedicated PSRAM allocation.
 Its FreeRTOS control block stays in internal RAM. The queue is allocated once
 and reused. One worker still owns the encoder and Ogg files; every 1500 source
 frames it finalizes the independent 30-second stream and opens the next one.
@@ -348,3 +348,43 @@ If the esptool upload stub cannot verify the flash connection, the installed
 esptool ROM path (`--before usb_reset --no-stub`) can program the application
 at 0x10000 on this existing partition layout; preserve bootloader, partition
 table, NVS and SD recordings. Require successful hash verification.
+
+
+## Interrupted direct-Opus recordings
+
+An active-session journal is written before capture. Boot and pre-sync recovery
+scan journaled sessions while the encoder is stopped. Each approximately one
+second, the open Ogg file is flushed to publish its FAT size/allocation. Recovery
+copies complete CRC-valid Ogg pages from an interrupted `.opus.tmp`, marks the
+last durable page EOS, validates the copy, and retains the original temporary
+file. Completed chunks are not modified. CSV metadata is rebuilt with its
+original retained as `.before-recovery`; a separate recovery marker makes the
+interrupted session eligible for the existing sync path. Patient boundary events
+remain unchanged. Existing sync manifests are not rewritten.
+
+For older recordings without a journal, maintenance USB mode additionally accepts
+`VSUSB RECOVER sNNNNN`. Recovery does not upload audio. Empty temporary files
+cannot yield audio; corrupt chunks or internal sequence gaps block publication.
+The latest unflushed audio, PCM still in RAM, and torn pages can be lost on reset.
+SD hardware failure can also prevent recovery; this is not a zero-loss guarantee.
+Explicitly stopped false starts under ten seconds keep their existing deletion
+behavior. PWR in the initial chooser still only cycles the three choices.
+
+Audio failures persist first-failure reason, source line, worker stage, queue
+state and dropped-frame counts in a session `_failure.txt` when storage permits.
+The larger PSRAM queue adds storage-stall tolerance. It does not establish the
+cause of an older field failure for which no diagnostic trace was retained.
+USB serial writes have a short timeout during recording to avoid long debug
+output stalls when the device is unplugged.
+
+Hardware recovery verification (2026-09-28): a recording interrupted with RESET
+was automatically recovered at boot as one 16,793 ms chunk. USB readback decoded
+successfully with FFmpeg `-v error -xerror`; the original 53,277-byte temporary
+file was retained. Older interrupted sessions were also recovered explicitly;
+all completed original Opus files and event logs remained byte-identical to the
+USB backup. Server ingestion has not been exercised by these recovery tests.
+
+A subsequent hardware run exceeded 100 seconds: chunks 1, 2 and 3 each closed
+with 1500 frames, 30000 ms and ok=1, and chunk 4 opened. No frames were dropped
+and no audio error, panic or reboot appeared during those rollovers. The observed
+queue high-water mark was 45/512 frames across the first three rotations.

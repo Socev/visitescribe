@@ -631,6 +631,14 @@ static void vsUsbHandleCommand(String line) {
     return;
   }
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (line.startsWith("VSUSB RECOVER ")) {
+    const String prefix = line.substring(14);
+    const bool ok = vsDoRecoverSession(prefix);
+    Serial.printf("VSUSB RECOVER %s %s\n", prefix.c_str(), ok ? "OK" : "FAILED");
+    return;
+  }
+#endif
   if (line == "VSUSB INFO") {
     vsUsbReplyInfo();
     return;
@@ -1212,6 +1220,9 @@ static bool vs067SyncAllPending() {
   if (!sdOk) return vsFail("microSD niet beschikbaar");
   if (!vsEnsureDeviceRootKey()) return vsFail("Device root key niet beschikbaar");
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  vsDoRecoverActiveSessions();
+#endif
   const auto prefixes = vsPendingPrefixes();
   Serial.printf("SERVER: pending queue count=%u", (unsigned)prefixes.size());
   for (const auto& prefix : prefixes) {
@@ -1325,6 +1336,9 @@ static void vs067ServiceServerSync() {
 
 void setup() {
   setup_v066_base();
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (sdOk) { vsDoRecoverActiveSessions(); screenDirty = true; }
+#endif
   if (!vs067EnsureScratch()) {
     Serial.println("SERVER: WARNING v0.6.7 large-read scratch unavailable");
   }

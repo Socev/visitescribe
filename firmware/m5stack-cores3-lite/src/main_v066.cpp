@@ -401,6 +401,10 @@ static String vsBaseName(const char* name) {
 }
 
 static bool vsEventsShowComplete(const String& eventsPath) {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  const String recovered = eventsPath.substring(0, eventsPath.length() - 11) + "_recovered.txt";
+  if (SD.exists(recovered)) return true;
+#endif
   File f = SD.open(eventsPath, FILE_READ);
   if (!f) return false;
   bool complete = false;

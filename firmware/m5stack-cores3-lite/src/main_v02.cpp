@@ -166,6 +166,7 @@ uint32_t wavDataBytes = 0;
 
 struct AudioDone { int16_t* data; size_t samples; };
 QueueHandle_t audioDoneQueue = nullptr;
+static volatile bool audioCallbackFailed = false;
 
 struct __attribute__((packed)) WAVHeader {
   char riff[4] = {'R','I','F','F'};
@@ -456,6 +457,10 @@ void drawHome() {
   centeredText(104, "opname", C_NAVY, 3);
   centeredText(134, "Standaard: Patient", C_GREY, 1);
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (vsDoRecoveredOnBoot) centeredText(160, "Audio hersteld - kies Verzenden", C_VIOLET, 1);
+  else
+#endif
   centeredText(160, "Lokaal klaar voor gebruik", C_GREY, 1);
   drawPwrHints("1x PWR  -  Start", "2x PWR  -  Menu");
 }
@@ -928,7 +933,7 @@ void logEvent(const char* eventName, uint32_t offsetMs) {
 void audioReleased(void*, void* data, size_t length) {
   if (!audioDoneQueue) return;
   AudioDone done{static_cast<int16_t*>(data), length};
-  xQueueSend(audioDoneQueue, &done, 0);
+  if (xQueueSend(audioDoneQueue, &done, 0) != pdTRUE) audioCallbackFailed = true;
 }
 
 bool queueAudio(int16_t* buffer) {
@@ -937,6 +942,12 @@ bool queueAudio(int16_t* buffer) {
 
 void serviceAudio() {
   if (!audioDoneQueue) return;
+  if (audioCallbackFailed) {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+    if (!audioError) vsDoFail("microphone callback queue full", __LINE__);
+#endif
+    audioError = true;
+  }
   AudioDone done;
   while (xQueueReceive(audioDoneQueue, &done, 0) == pdTRUE) {
 #ifdef VISITESCRIBE_DIRECT_OPUS
@@ -955,6 +966,9 @@ void serviceAudio() {
     }
 #endif
     if (captureRunning && done.data && !queueAudio(done.data)) {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+      vsDoFail("microphone requeue failed", __LINE__);
+#endif
       Serial.printf("RECORDER: audioError microphone requeue t=%lu\n", (unsigned long)millis());
       audioError = true;
     }
@@ -962,6 +976,7 @@ void serviceAudio() {
 }
 
 bool startCapture() {
+  audioCallbackFailed = false;
 #ifdef VISITESCRIBE_DIRECT_OPUS
   if (!vsDirectOpusReady()) {
     audioError = true;
@@ -1037,6 +1052,13 @@ static bool discardCurrentFalseStart() {
 bool startNewSession(Mode mode) {
   const uint32_t startMs = millis();
   if (!sdOk) return false;
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (!vsDoWorkerDone) {
+    uiErrorTitle = "Opnemen niet mogelijk";
+    uiErrorDetail = "Vorige opname wordt nog bewaard";
+    return false;
+  }
+#endif
   selectedMode = mode;
   sessionId = findNextSessionId();
 #ifdef VISITESCRIBE_DIRECT_OPUS
@@ -1067,6 +1089,14 @@ bool startNewSession(Mode mode) {
   }
   events.println("elapsed_ms,event,patient,segment,markers,audio_file");
   events.close();
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (!vsDoWriteActiveJournal()) {
+    sessionOpen = false;
+    uiErrorTitle = "Opnemen niet mogelijk";
+    uiErrorDetail = "Herstellog kon niet starten";
+    return false;
+  }
+#endif
 
   Serial.printf("RECORDER: start storage=%lums\n", (unsigned long)(millis() - startMs));
   const uint32_t encoderStartMs = millis();
@@ -1214,6 +1244,9 @@ void addMarkerOrNext() {
     finalizeWavSegment();
 
     if (audioError) {
+#ifdef VISITESCRIBE_DIRECT_OPUS
+      vsDoPersistFailure();
+#endif
       sessionOpen = false;
       uiErrorTitle = "Opname onderbroken";
       uiErrorDetail = "Opslaan van patientsegment mislukt";
@@ -1266,6 +1299,9 @@ void stopSession() {
 
   logEvent("session_stopped", off);
   finalizeWavSegment();
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (audioError) vsDoPersistFailure();
+#endif
   if (paused) {
     totalPausedMs += millis() - pauseStartedMs;
     pauseStartedMs = 0;
@@ -1305,6 +1341,9 @@ void stopSession() {
     return;
   }
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  vsDoClearActiveJournal();
+#endif
   lastSessionFalseStart = false;
   lastSessionSaved = true;
   finishedAtMs = millis();
@@ -1325,12 +1364,20 @@ void handleActiveRecordingError() {
 
   logEvent("recording_error", off);
   finalizeWavSegment();
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  vsDoPersistFailure();
+  char prefix[8]; snprintf(prefix, sizeof(prefix), "s%05u", sessionId);
+  const bool recovered = vsDoWorkerDone && vsDoRecoverSession(prefix);
+#endif
 
   sessionOpen = false;
   quickModeChoiceActive = false;
   quickModeChoiceStartedMs = 0;
   uiErrorTitle = "Opname onderbroken";
   uiErrorDetail = "Audio- of opslagfout gedetecteerd";
+#ifdef VISITESCRIBE_DIRECT_OPUS
+  if (recovered) uiErrorDetail = "Audio bewaard - kies Verzenden";
+#endif
   state = AppState::ERROR;
   screenDirty = true;
 
