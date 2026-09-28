@@ -455,17 +455,7 @@ void drawHome() {
   centeredText(104, "opname", C_NAVY, 3);
   centeredText(134, "Standaard: Visite", C_GREY, 1);
 
-  char pending[48];
-  const uint32_t n = pendingCountUi();
-  if (n == 0) {
-    snprintf(pending, sizeof(pending), "Geen opnames te verzenden");
-  } else if (n == 1) {
-    snprintf(pending, sizeof(pending), "1 opname te verzenden");
-  } else {
-    snprintf(pending, sizeof(pending), "%lu opnames te verzenden",
-             (unsigned long)n);
-  }
-  centeredText(160, pending, n ? C_VIOLET : C_GREY, 1);
+  centeredText(160, "Lokaal klaar voor gebruik", C_GREY, 1);
   drawPwrHints("1x PWR  -  Start", "2x PWR  -  Menu");
 }
 
@@ -571,10 +561,13 @@ void drawFinished() {
     centeredText(124, "Opname verwijderd", C_GREY, 1);
     centeredText(150, "korter dan 10 seconden", C_GREY, 1);
   } else {
-    M5.Display.drawCircle(58, 87, 13, C_GREEN);
-    M5.Display.drawLine(51, 87, 56, 92, C_GREEN);
-    M5.Display.drawLine(56, 92, 66, 80, C_GREEN);
-    centeredText(86, "Opgeslagen", C_GREEN, 3);
+    M5.Display.drawCircle(42, 87, 13, C_GREEN);
+    M5.Display.drawLine(35, 87, 40, 92, C_GREEN);
+    M5.Display.drawLine(40, 92, 50, 80, C_GREEN);
+    M5.Display.setTextDatum(middle_left);
+    M5.Display.setTextColor(C_GREEN);
+    M5.Display.setTextSize(3);
+    M5.Display.drawString("Opgeslagen", 70, 86);
     centeredText(122, "Op dit apparaat", C_GREY, 1);
 
     char context[56];
@@ -586,9 +579,7 @@ void drawFinished() {
       snprintf(context, sizeof(context), "Visite - %u patienten", patientNumber);
     }
     centeredText(146, context, C_NAVY, 1);
-    if (pendingCountUi() > 0) {
-      centeredText(166, "Nog te verzenden", C_VIOLET, 1);
-    }
+    centeredText(166, "Nog te verzenden", C_VIOLET, 1);
   }
 
   drawPwrHints("1x PWR  -  Nieuwe opname", "2x PWR  -  Menu");
@@ -598,14 +589,8 @@ void drawMenu() {
   drawHeader("Menu");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
 
-  char syncSubtitle[48];
-  const uint32_t pending = pendingCountUi();
-  if (pending == 0) snprintf(syncSubtitle, sizeof(syncSubtitle), "Alles verzonden");
-  else if (pending == 1) snprintf(syncSubtitle, sizeof(syncSubtitle), "1 opname wacht");
-  else snprintf(syncSubtitle, sizeof(syncSubtitle), "%lu opnames wachten",
-                (unsigned long)pending);
-
-  drawTouchButton(THREE_TOP, "Verzenden", syncSubtitle, pending > 0);
+  drawTouchButton(
+      THREE_TOP, "Verzenden", "via wifi naar server", true);
   drawTouchButton(THREE_MIDDLE, "Apparaatstatus");
   drawTouchButton(THREE_BOTTOM, "Terug");
 }
@@ -629,11 +614,11 @@ void drawStatus() {
            : "Opslag                    Fout",
       24, 87);
 
-  const uint32_t pending = pendingCountUi();
-  snprintf(line, sizeof(line), "Te verzenden              %lu",
-           (unsigned long)pending);
-  M5.Display.setTextColor(C_NAVY);
-  M5.Display.drawString(line, 24, 110);
+  M5.Display.setTextColor(audioError ? C_RED : C_NAVY);
+  M5.Display.drawString(
+      audioError ? "Audio                     Fout"
+                 : "Audio                     Gereed",
+      24, 110);
 
   const bool wifi = WiFi.status() == WL_CONNECTED;
   M5.Display.setTextColor(C_NAVY);
@@ -722,17 +707,62 @@ static void drawError() {
   drawTouchButton(STATUS_BACK, "Terug");
 }
 
+static void updateRecordingDynamic() {
+  if (state != AppState::RECORDING) return;
+
+  if (quickModeChoiceActive) {
+    const uint32_t used = millis() - quickModeChoiceStartedMs;
+    const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
+        ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
+    char line[56];
+    snprintf(line, sizeof(line), "Zonder keuze: Visite - %lus",
+             (unsigned long)remaining);
+
+    // Only repaint the countdown strip; never clear/redraw the full screen.
+    M5.Display.fillRect(0, 166, SCREEN_W, 18, C_WHITE);
+    centeredText(176, line, C_GREY, 1);
+    lastUiSecond = activeElapsedMs() / 1000;
+    return;
+  }
+
+  char elapsed[16];
+  formatCompactElapsed(recordingDisplayElapsedMs(), elapsed, sizeof(elapsed));
+
+  // The timer owns a fixed white rectangle. Clearing only this rectangle
+  // prevents the visible whole-screen flash that used to happen every second.
+  M5.Display.fillRect(54, 102, 212, 45, C_WHITE);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(C_NAVY);
+  M5.Display.setTextSize(4);
+  M5.Display.drawString(elapsed, SCREEN_W / 2, 124);
+
+  // Toast/marker/touch line may also change without redrawing the frame.
+  M5.Display.fillRect(24, 148, 272, 28, C_WHITE);
+  if (recordingToast[0] &&
+      static_cast<int32_t>(recordingToastUntilMs - millis()) > 0) {
+    centeredText(158, recordingToast, C_VIOLET, 1);
+  } else if (selectedMode == Mode::MEETING && markerCount > 0) {
+    char marks[40];
+    snprintf(marks, sizeof(marks), "%u markering%s",
+             markerCount, markerCount == 1 ? "" : "en");
+    centeredText(158, marks, C_GREY, 1);
+  } else {
+    centeredText(158, "Touch uit", C_GREY, 1);
+  }
+
+  lastUiSecond = activeElapsedMs() / 1000;
+}
+
 void render(bool force = false) {
   // Do not redraw timers or UI into a sleeping LCD controller.
   if (!force && displayPower == DisplayPower::OFF) return;
 
   if (!force && !screenDirty) {
-    if ((state == AppState::RECORDING || state == AppState::PAUSED) &&
+    if (state == AppState::RECORDING &&
         activeElapsedMs() / 1000 != lastUiSecond) {
-      screenDirty = true;
-    } else {
-      return;
+      updateRecordingDynamic();
     }
+    return;
   }
 
   screenDirty = false;
