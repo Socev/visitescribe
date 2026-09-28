@@ -44,23 +44,28 @@ static int16_t audioBufA[AUDIO_BLOCK_SAMPLES];
 static int16_t audioBufB[AUDIO_BLOCK_SAMPLES];
 
 static constexpr uint8_t BRIGHTNESS_ACTIVE = 180;
-static constexpr uint8_t BRIGHTNESS_DIM = 24;
-static constexpr uint32_t DISPLAY_DIM_MS = 12000;
-static constexpr uint32_t DISPLAY_OFF_MS = 60000;
-static constexpr uint32_t FINISHED_AUTO_HOME_MS = 8000;
+static constexpr uint8_t BRIGHTNESS_DIM = 36;
+static constexpr uint32_t FINISHED_AUTO_HOME_MS = 3000;
+static constexpr uint32_t FALSE_START_AUTO_HOME_MS = 2500;
+static constexpr uint32_t FALSE_START_LIMIT_MS = 10000;
+static constexpr uint32_t MENU_AUTO_HOME_MS = 30000;
 static constexpr uint32_t WIFI_ATTEMPT_MS = 15000;
 
-static constexpr uint16_t C_BG      = 0xE71C;
+// Brian functional UI: white base, near-black text, violet accent.
+// These are RGB565 approximations of the UX brief values.
+static constexpr uint16_t C_BG      = 0xFFFF; // #FFFFFF
 static constexpr uint16_t C_WHITE   = 0xFFFF;
-static constexpr uint16_t C_NAVY    = 0x10A5;
-static constexpr uint16_t C_BLUE    = 0x225D;
-static constexpr uint16_t C_VIOLET  = 0x633D;
-static constexpr uint16_t C_TEAL    = 0x2575;
-static constexpr uint16_t C_GREEN   = 0x35CF;
-static constexpr uint16_t C_RED     = 0xEA4B;
-static constexpr uint16_t C_AMBER   = 0xFD47;
-static constexpr uint16_t C_GREY    = 0x6B6D;
-static constexpr uint16_t C_LINE    = 0xBDF7;
+static constexpr uint16_t C_NAVY    = 0x2103; // #20211F
+static constexpr uint16_t C_BLUE    = 0x62BB; // violet accent #6654D9
+static constexpr uint16_t C_VIOLET  = 0x62BB;
+static constexpr uint16_t C_TEAL    = 0x62BB;
+static constexpr uint16_t C_GREEN   = 0x2328; // #246746
+static constexpr uint16_t C_RED     = 0xB106; // #B42332
+static constexpr uint16_t C_AMBER   = 0x8A80; // #885300
+static constexpr uint16_t C_GREY    = 0x632B; // #62665F
+static constexpr uint16_t C_LINE    = 0xE73C; // #E4E7E2
+static constexpr uint16_t C_SOFT    = 0xF7BE; // #F5F6F3
+static constexpr uint16_t C_VIOLET_SOFT = 0xF77F; // #F0EDFC
 
 struct Rect {
   int x, y, w, h;
@@ -78,11 +83,15 @@ static const Rect TWO_BOTTOM   {0,140, 320,100};
 static const Rect THREE_TOP    {0, 40, 320, 67};
 static const Rect THREE_MIDDLE {0,107, 320, 67};
 static const Rect THREE_BOTTOM {0,174, 320, 66};
-static const Rect STATUS_BACK  {0,190,320,50};
-static const Rect SYNC_RETRY   {0,140,320,50};
-static const Rect SYNC_BACK    {0,190,320,50};
+static const Rect STATUS_DETAILS {16,142,288,42};
+static const Rect STATUS_BACK    {16,190,288,42};
+static const Rect SYNC_RETRY     {16,140,288,42};
+static const Rect SYNC_BACK      {16,190,288,42};
 
-enum class AppState : uint8_t { HOME, MODE_CONFIRM, RECORDING, PAUSED, FINISHED, MENU, STATUS, SYNC };
+enum class AppState : uint8_t {
+  HOME, MODE_CONFIRM, RECORDING, PAUSED, SAVING, FINISHED,
+  MENU, STATUS, DETAILS, SYNC, ERROR
+};
 enum class Mode : uint8_t { VISIT, ROUND, MEETING };
 enum class SyncPhase : uint8_t { NOT_STARTED, NO_CREDENTIALS, CONNECTING_1, CONNECTING_2, CONNECTED, FAILED };
 enum class DisplayPower : uint8_t { ACTIVE, DIMMED, OFF };
@@ -92,9 +101,12 @@ Mode selectedMode = Mode::VISIT;
 SyncPhase syncPhase = SyncPhase::NOT_STARTED;
 DisplayPower displayPower = DisplayPower::ACTIVE;
 
-// Later server-sync layers can lock SYNC touch while network writes are in
-// progress. This prevents an incidental tap from aborting a live upload.
+// Later sync layers install these lightweight UI hooks once their inventory
+// and server state are available.
 static bool (*vsSyncTouchLockedHook)() = nullptr;
+static uint32_t (*vsPendingCountHook)() = nullptr;
+static bool (*vsSyncRetryAllowedHook)() = nullptr;
+static bool (*vsSyncDoneHook)() = nullptr;
 
 bool sdOk = false;
 bool touchOk = false;
@@ -112,6 +124,14 @@ bool quickModeChoiceActive = false;
 bool visitPatientFlow = false;
 uint32_t quickModeChoiceStartedMs = 0;
 static constexpr uint32_t QUICK_MODE_CHOICE_MS = 10000;
+
+bool lastSessionFalseStart = false;
+bool lastSessionSaved = false;
+uint32_t patientSegmentStartOffsetMs = 0;
+char recordingToast[48] = {0};
+uint32_t recordingToastUntilMs = 0;
+String uiErrorTitle;
+String uiErrorDetail;
 
 uint32_t sessionStartedMs = 0;
 uint32_t pauseStartedMs = 0;
