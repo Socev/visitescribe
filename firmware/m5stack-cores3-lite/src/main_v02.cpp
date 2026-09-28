@@ -3,6 +3,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <WiFi.h>
+#include <esp_system.h>
 #include "brian_ourmind_logo.h"
 
 #if __has_include("wifi_secrets.h")
@@ -125,10 +126,7 @@ bool quickModeChoiceActive = false;
 bool visitPatientFlow = false;
 QuickChoice quickChoice = QuickChoice::PATIENT;
 uint32_t quickModeChoiceStartedMs = 0;
-uint32_t quickModeChoiceDeadlineMs = 0;
 static constexpr uint32_t QUICK_MODE_CHOICE_MS = 10000;
-static constexpr uint32_t QUICK_MODE_EXPLICIT_DWELL_MS = 3000;
-static constexpr uint32_t QUICK_MODE_STOP_DWELL_MS = 3000;
 
 bool lastSessionFalseStart = false;
 bool lastSessionSaved = false;
@@ -485,10 +483,9 @@ void drawRecording() {
   M5.Display.drawString("Neemt op", 38, 57);
 
   if (quickModeChoiceActive) {
-    const int32_t leftMs =
-        static_cast<int32_t>(quickModeChoiceDeadlineMs - millis());
-    const uint32_t remaining =
-        leftMs <= 0 ? 0 : (static_cast<uint32_t>(leftMs) + 999) / 1000;
+    const uint32_t used = millis() - quickModeChoiceStartedMs;
+    const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
+        ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
 
     Rect patientChoice{4, 68, 312, 44};
     Rect meetingChoice{4, 114, 312, 44};
@@ -524,23 +521,14 @@ void drawRecording() {
         stopChoice.y + stopChoice.h / 2);
 
     char line[48];
-    if (quickChoice == QuickChoice::STOP) {
-      snprintf(line, sizeof(line), "STOP bevestigen - %lus",
-               (unsigned long)remaining);
-    } else {
-      snprintf(line, sizeof(line), "Keuze over %lus",
-               (unsigned long)remaining);
-    }
+    snprintf(line, sizeof(line), "Keuze over %lus",
+             (unsigned long)remaining);
     M5.Display.setTextDatum(middle_left);
-    M5.Display.setTextColor(
-        quickChoice == QuickChoice::STOP ? C_RED : C_GREY);
+    M5.Display.setTextColor(C_GREY);
     M5.Display.setTextSize(1);
     M5.Display.drawString(line, 16, 172);
 
-    drawPwrHints(
-        quickChoice == QuickChoice::STOP
-            ? "PWR  -  STOP bevestigen"
-            : "PWR  -  volgende keuze");
+    drawPwrHints("PWR  -  volgende keuze");
     lastUiSecond = activeElapsedMs() / 1000;
     return;
   }
@@ -754,24 +742,17 @@ static void updateRecordingDynamic() {
   if (state != AppState::RECORDING) return;
 
   if (quickModeChoiceActive) {
-    const int32_t leftMs =
-        static_cast<int32_t>(quickModeChoiceDeadlineMs - millis());
-    const uint32_t remaining =
-        leftMs <= 0 ? 0 : (static_cast<uint32_t>(leftMs) + 999) / 1000;
+    const uint32_t used = millis() - quickModeChoiceStartedMs;
+    const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
+        ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
     char line[48];
-    if (quickChoice == QuickChoice::STOP) {
-      snprintf(line, sizeof(line), "STOP bevestigen - %lus",
-               (unsigned long)remaining);
-    } else {
-      snprintf(line, sizeof(line), "Keuze over %lus",
-               (unsigned long)remaining);
-    }
+    snprintf(line, sizeof(line), "Keuze over %lus",
+             (unsigned long)remaining);
 
     // Only repaint the countdown text; the choice cards stay untouched.
     M5.Display.fillRect(12, 160, 210, 24, C_WHITE);
     M5.Display.setTextDatum(middle_left);
-    M5.Display.setTextColor(
-        quickChoice == QuickChoice::STOP ? C_RED : C_GREY);
+    M5.Display.setTextColor(C_GREY);
     M5.Display.setTextSize(1);
     M5.Display.drawString(line, 16, 172);
     lastUiSecond = activeElapsedMs() / 1000;
@@ -1106,20 +1087,17 @@ bool startNewSession(Mode mode) {
 void stopSession();
 
 bool startQuickSession() {
-  // Capture starts immediately. PATIENT is the default; the chooser remains
-  // visible for ten seconds unless the user explicitly changes the selection.
+  // Capture starts immediately. The chooser itself is purely a visual selector
+  // for one fixed ten-second window; selecting an item never shortens it.
   visitPatientFlow = true;
   quickModeChoiceActive = true;
   quickChoice = QuickChoice::PATIENT;
   quickModeChoiceStartedMs = millis();
-  quickModeChoiceDeadlineMs =
-      quickModeChoiceStartedMs + QUICK_MODE_CHOICE_MS;
 
   if (!startNewSession(Mode::VISIT)) {
     quickModeChoiceActive = false;
     visitPatientFlow = false;
     quickModeChoiceStartedMs = 0;
-    quickModeChoiceDeadlineMs = 0;
     return false;
   }
   return true;
@@ -1138,11 +1116,6 @@ void selectQuickMode(Mode mode) {
     quickChoice = QuickChoice::PATIENT;
   }
 
-  // An explicit choice stays on screen for a few seconds. This makes touch
-  // selection feel confirmed rather than disappearing immediately, and still
-  // gives the user time to switch back.
-  quickModeChoiceDeadlineMs =
-      millis() + QUICK_MODE_EXPLICIT_DWELL_MS;
   lastUserActivityMs = millis();
   screenDirty = true;
 }
@@ -1150,19 +1123,15 @@ void selectQuickMode(Mode mode) {
 void selectQuickStop() {
   if (!quickModeChoiceActive || !sessionOpen) return;
   quickChoice = QuickChoice::STOP;
-  quickModeChoiceDeadlineMs =
-      millis() + QUICK_MODE_STOP_DWELL_MS;
   lastUserActivityMs = millis();
   screenDirty = true;
 }
 
 void touchQuickStop() {
   if (!quickModeChoiceActive || !sessionOpen) return;
-  if (quickChoice == QuickChoice::STOP) {
-    stopSession();
-  } else {
-    selectQuickStop();
-  }
+  // Touching the small STOP control is an explicit stop action. PWR never
+  // confirms STOP; PWR only cycles through the three visible choices.
+  stopSession();
 }
 
 void cycleQuickChoice() {
@@ -1173,19 +1142,17 @@ void cycleQuickChoice() {
   } else if (quickChoice == QuickChoice::MEETING) {
     selectQuickStop();
   } else {
-    // STOP is intentionally two-step. Merely highlighting it can NEVER stop
-    // a recording; a fresh PWR press is required to confirm.
-    stopSession();
+    selectQuickMode(Mode::VISIT);
   }
 }
 
 static void commitQuickRecordingMode() {
   if (!quickModeChoiceActive || !sessionOpen) return;
 
+  // STOP is deliberately not a recording mode. If it happens to be highlighted
+  // when the ten-second chooser expires, keep the last actual mode and record.
   if (selectedMode == Mode::MEETING) {
 #ifndef VISITESCRIBE_DIRECT_OPUS
-    // The WAV backend starts before the type choice, so only its final rename
-    // target changes. Direct Opus chunks use mode-neutral chunk names.
     snprintf(wavFinalPath, sizeof(wavFinalPath),
              "/visitescribe/s%05u_meeting.wav", sessionId);
 #endif
@@ -1198,18 +1165,13 @@ static void commitQuickRecordingMode() {
 
   quickModeChoiceActive = false;
   quickModeChoiceStartedMs = 0;
-  quickModeChoiceDeadlineMs = 0;
   lastUserActivityMs = millis();
   screenDirty = true;
 }
 
 void serviceQuickModeChoiceTimeout() {
   if (!quickModeChoiceActive) return;
-  if (static_cast<int32_t>(quickModeChoiceDeadlineMs - millis()) > 0) return;
-
-  // Safety rule: timeout can only COMMIT a recording mode. It can never stop
-  // audio. If STOP was merely highlighted and not explicitly confirmed, fall
-  // back to the last real mode (selectedMode) and continue recording.
+  if (millis() - quickModeChoiceStartedMs < QUICK_MODE_CHOICE_MS) return;
   commitQuickRecordingMode();
 }
 
@@ -1303,7 +1265,6 @@ void stopSession() {
   sessionOpen = false;
   quickModeChoiceActive = false;
   quickModeChoiceStartedMs = 0;
-  quickModeChoiceDeadlineMs = 0;
 
   if (off < FALSE_START_LIMIT_MS) {
     const bool removed = discardCurrentFalseStart();
@@ -1387,7 +1348,6 @@ void goHome() {
   visitPatientFlow = false;
   quickChoice = QuickChoice::PATIENT;
   quickModeChoiceStartedMs = 0;
-  quickModeChoiceDeadlineMs = 0;
   recordingToast[0] = '\0';
   recordingToastUntilMs = 0;
   eventsPath[0] = wavTmpPath[0] = wavFinalPath[0] = '\0';
@@ -1605,6 +1565,8 @@ void serviceDisplayPower() {
 void setup() {
   Serial.begin(115200);
   delay(250);
+  const esp_reset_reason_t bootResetReason = esp_reset_reason();
+  Serial.printf("BOOT: reset_reason=%d\n", (int)bootResetReason);
 
   auto cfg = M5.config();
   cfg.fallback_board = m5::board_t::board_M5StackCoreS3;
