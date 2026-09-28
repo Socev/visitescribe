@@ -128,7 +128,7 @@ uint32_t quickModeChoiceStartedMs = 0;
 uint32_t quickModeChoiceDeadlineMs = 0;
 static constexpr uint32_t QUICK_MODE_CHOICE_MS = 10000;
 static constexpr uint32_t QUICK_MODE_EXPLICIT_DWELL_MS = 3000;
-static constexpr uint32_t QUICK_MODE_STOP_DWELL_MS = 1200;
+static constexpr uint32_t QUICK_MODE_STOP_DWELL_MS = 3000;
 
 bool lastSessionFalseStart = false;
 bool lastSessionSaved = false;
@@ -523,15 +523,24 @@ void drawRecording() {
         "STOP", stopChoice.x + stopChoice.w / 2,
         stopChoice.y + stopChoice.h / 2);
 
-    char line[40];
-    snprintf(line, sizeof(line), "Keuze over %lus",
-             (unsigned long)remaining);
+    char line[48];
+    if (quickChoice == QuickChoice::STOP) {
+      snprintf(line, sizeof(line), "STOP bevestigen - %lus",
+               (unsigned long)remaining);
+    } else {
+      snprintf(line, sizeof(line), "Keuze over %lus",
+               (unsigned long)remaining);
+    }
     M5.Display.setTextDatum(middle_left);
-    M5.Display.setTextColor(C_GREY);
+    M5.Display.setTextColor(
+        quickChoice == QuickChoice::STOP ? C_RED : C_GREY);
     M5.Display.setTextSize(1);
     M5.Display.drawString(line, 16, 172);
 
-    drawPwrHints("PWR  -  volgende keuze");
+    drawPwrHints(
+        quickChoice == QuickChoice::STOP
+            ? "PWR  -  STOP bevestigen"
+            : "PWR  -  volgende keuze");
     lastUiSecond = activeElapsedMs() / 1000;
     return;
   }
@@ -749,14 +758,20 @@ static void updateRecordingDynamic() {
         static_cast<int32_t>(quickModeChoiceDeadlineMs - millis());
     const uint32_t remaining =
         leftMs <= 0 ? 0 : (static_cast<uint32_t>(leftMs) + 999) / 1000;
-    char line[40];
-    snprintf(line, sizeof(line), "Keuze over %lus",
-             (unsigned long)remaining);
+    char line[48];
+    if (quickChoice == QuickChoice::STOP) {
+      snprintf(line, sizeof(line), "STOP bevestigen - %lus",
+               (unsigned long)remaining);
+    } else {
+      snprintf(line, sizeof(line), "Keuze over %lus",
+               (unsigned long)remaining);
+    }
 
     // Only repaint the countdown text; the choice cards stay untouched.
     M5.Display.fillRect(12, 160, 210, 24, C_WHITE);
     M5.Display.setTextDatum(middle_left);
-    M5.Display.setTextColor(C_GREY);
+    M5.Display.setTextColor(
+        quickChoice == QuickChoice::STOP ? C_RED : C_GREY);
     M5.Display.setTextSize(1);
     M5.Display.drawString(line, 16, 172);
     lastUiSecond = activeElapsedMs() / 1000;
@@ -1141,6 +1156,15 @@ void selectQuickStop() {
   screenDirty = true;
 }
 
+void touchQuickStop() {
+  if (!quickModeChoiceActive || !sessionOpen) return;
+  if (quickChoice == QuickChoice::STOP) {
+    stopSession();
+  } else {
+    selectQuickStop();
+  }
+}
+
 void cycleQuickChoice() {
   if (!quickModeChoiceActive || !sessionOpen) return;
 
@@ -1149,7 +1173,9 @@ void cycleQuickChoice() {
   } else if (quickChoice == QuickChoice::MEETING) {
     selectQuickStop();
   } else {
-    selectQuickMode(Mode::VISIT);
+    // STOP is intentionally two-step. Merely highlighting it can NEVER stop
+    // a recording; a fresh PWR press is required to confirm.
+    stopSession();
   }
 }
 
@@ -1181,12 +1207,10 @@ void serviceQuickModeChoiceTimeout() {
   if (!quickModeChoiceActive) return;
   if (static_cast<int32_t>(quickModeChoiceDeadlineMs - millis()) > 0) return;
 
-  const bool stopSelected = quickChoice == QuickChoice::STOP;
+  // Safety rule: timeout can only COMMIT a recording mode. It can never stop
+  // audio. If STOP was merely highlighted and not explicitly confirmed, fall
+  // back to the last real mode (selectedMode) and continue recording.
   commitQuickRecordingMode();
-
-  if (stopSelected && sessionOpen) {
-    stopSession();
-  }
 }
 
 void togglePrivacy() {
