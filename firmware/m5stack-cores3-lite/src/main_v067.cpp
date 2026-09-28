@@ -1224,12 +1224,17 @@ static bool vs067SyncAllPending() {
 
   vsServerSessionsTotal = vsServerSessionsDone = vsServerSessionsSkipped = 0;
   vsSetStage(VsServerStage::CLEANUP);
-  vsRetentionCleanup();
+  std::vector<String> directory;
+  const uint32_t directoryStarted = millis();
+  if (!vsReadSessionDirectory(directory)) return vsFail("Opnamemap lezen mislukt");
+  Serial.printf("SERVER: shared directory pass files=%u elapsed=%lums\n",
+                (unsigned)directory.size(), (unsigned long)(millis() - directoryStarted));
+  vsRetentionCleanup(&directory);
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  vsDoRecoverActiveSessions();
+  vsDoRecoverActiveSessions(&directory);
 #endif
   std::vector<VsLocalSession> preparedSessions;
-  const auto prefixes = vsPendingPrefixes(&preparedSessions);
+  const auto prefixes = vsPendingPrefixes(&preparedSessions, &directory);
   Serial.printf("SERVER: pending queue count=%u", (unsigned)prefixes.size());
   for (const auto& prefix : prefixes) {
     Serial.printf(" %s", prefix.c_str());

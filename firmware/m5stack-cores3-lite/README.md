@@ -436,12 +436,15 @@ without scanning the directory again for every session.
 Wi-Fi sync reuses the validated session/chunk metadata within that invocation.
 There is no persistent inventory cache: later recordings, recoveries, confirmed
 uploads and retention changes are reflected on the next invocation. The uploader
-still opens and checks the actual audio when preparing each upload. Recovery and
-retention have their own bounded directory scans; `directory_passes=1` refers to
-the pending inventory, not to all SD activity throughout SYNC.
+still opens and checks the actual audio when preparing each upload. Before Wi-Fi sync, retention, active-journal discovery and pending inventory
+share one call-scoped filename snapshot. Actual recovery of an interrupted
+recording can still inspect its chunks separately; normal maintenance does not
+rescan the directory. Metadata/audio are read freshly, so files removed by
+retention are not accidentally included from the earlier snapshot.
 
-Serial reports `SERVER: inventory directory_passes=1 files=... pending=...
-elapsed=...ms`. Host test `tests/inventory_host.cpp` includes the retention tests
+Serial reports the shared directory pass timing, then `SERVER: inventory
+directory_passes=0 files=... pending=... elapsed=...ms` when reusing that snapshot.
+Standalone inventory calls report one directory pass. Host test `tests/inventory_host.cpp` includes the retention tests
 and exercises the actual inventory header against 60 simulated sessions, including
 Opus, legacy WAV, recovered, incomplete, corrupt and already ingested cases. It
 asserts one directory pass per inventory and fresh results after files/status

@@ -1,4 +1,5 @@
 #pragma once
+#include "sync_directory.h"
 // Called only with recorder/worker stopped; all paths stay in /visitescribe.
 static bool vsRetentionValidPrefix(const String& prefix) {
   if (prefix.length() != 6 || prefix[0] != 's') return false;
@@ -44,27 +45,22 @@ static void vsRetentionRecordConfirmation(const String& prefix, const String& uu
   Serial.printf("RETENTION: %s 72h grace period started\n", prefix.c_str());
 }
 
-static void vsRetentionCleanup() {
+static void vsRetentionCleanup(const std::vector<String>* snapshot = nullptr) {
   const uint64_t now = vsRetentionNow();
   if (!sdOk || !now || captureRunning || sessionOpen) return;
 #ifdef VISITESCRIBE_DIRECT_OPUS
   if (!vsDoWorkerDone) return;
 #endif
-  std::vector<String> files, prefixes;
-  File dir = SD.open("/visitescribe");
-  if (!dir) return;
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    if (!f.isDirectory()) {
-      String name = f.name(); name = name.substring(name.lastIndexOf('/') + 1);
-      if (name.length() > 7 && name[6] == '_' &&
-          vsRetentionValidPrefix(name.substring(0, 6))) {
-        files.push_back(name);
-        if (name.endsWith("_sync.txt")) prefixes.push_back(name.substring(0, 6));
-      }
-    }
-    f.close();
+  std::vector<String> ownedFiles, prefixes;
+  if (!snapshot) {
+    if (!vsReadSessionDirectory(ownedFiles)) return;
+    snapshot = &ownedFiles;
   }
-  dir.close();
+  const auto& files = *snapshot;
+  for (const auto& name : files) {
+    if (name == name.substring(0, 6) + "_sync.txt" &&
+        vsRetentionValidPrefix(name.substring(0, 6))) prefixes.push_back(name.substring(0, 6));
+  }
   for (const auto& prefix : prefixes) {
     String uuid, syncState;
     if (!vsReadSyncMeta(prefix, uuid, syncState) || syncState != "ingested") continue;

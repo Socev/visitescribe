@@ -12,7 +12,7 @@ struct VsLocalSession {
 uint32_t millis() { return 0; }
 String vsBaseName(const char* p) { String s(p); return s.substring(s.lastIndexOf('/')+1); }
 bool vsLocalSyncStateTerminal(const String& s) { return s=="ingested" || s=="quarantined_no_audio"; }
-bool vsEventsShowComplete(const String& p) { return SD.data[p]=="stopped" || SD.data[p]=="recovered"; }
+bool vsEventsShowComplete(const String& p) { auto i=SD.data.find(p); return i!=SD.data.end() && (i->second=="stopped" || i->second=="recovered"); }
 std::map<String,int> opusReads;
 std::vector<VsDirectOpusChunkInfo> vsDirectOpusChunksForPrefix(const String& p) {
   ++opusReads[p];
@@ -52,5 +52,16 @@ int main() {
   SD.data.erase("/visitescribe/s00002_visit_p001.wav");
   SD.data.erase("/visitescribe/s00002_visit_p002.wav");
   ids=vsPendingPrefixes(&prepared); assert(ids.empty() && prepared.empty()); assert(SD.directoryOpens==2);
+  // Maintenance can delete files from a shared snapshot. Fresh metadata checks
+  // must not resurrect that recording, and must not rescan the directory.
+  seed(); SD.data[base+"_events.csv"]="stopped";
+  SD.data[base+"_opus.csv"]="valid";
+  std::vector<String> directory;
+  assert(vsReadSessionDirectory(directory));
+  vsRetentionCleanup(&directory);
+  auto remaining=SD.data;
+  ids=vsPendingPrefixes(&prepared,&directory);
+  assert(ids.empty() && SD.directoryOpens==1 && SD.data==remaining);
+  puts("PASS: shared snapshot across retention/inventory; deleted files not resurrected; one physical directory pass.");
   puts("PASS: one directory pass for 60 sessions, Opus-first selection, WAV fallback/order, recovery, invalid/incomplete/ingested filtering, fresh inventory after mutation.");
 }

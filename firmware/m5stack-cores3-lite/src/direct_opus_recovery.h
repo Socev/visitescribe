@@ -1,4 +1,5 @@
 #pragma once
+#include "sync_directory.h"
 // Recovery runs only while capture/worker are stopped. Originals are preserved.
 static uint32_t vsDoRecoveredOnBoot = 0;
 static uint8_t vsDoRecoveryPage[8192];
@@ -185,19 +186,17 @@ static bool vsDoWriteActiveJournal() {
   return ok;
 }
 
-static void vsDoRecoverActiveSessions() {
+static void vsDoRecoverActiveSessions(const std::vector<String>* snapshot = nullptr) {
   if (!vsDoWorkerDone || captureRunning) return;
-  std::vector<String> prefixes;
-  File dir = SD.open("/visitescribe");
-  if (!dir) return;
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    String name = f.name(); name = name.substring(name.lastIndexOf('/') + 1);
-    if (name.endsWith("_active.txt") && vsDoValidPrefix(name.substring(0, 6))) prefixes.push_back(name.substring(0, 6));
-    f.close();
+  std::vector<String> ownedFiles;
+  if (!snapshot) {
+    if (!vsReadSessionDirectory(ownedFiles)) return;
+    snapshot = &ownedFiles;
   }
-  dir.close();
-  for (const auto& prefix : prefixes) {
-    vsDoRecoverSession(prefix);
+  for (const auto& name : *snapshot) {
+    if (name == name.substring(0, 6) + "_active.txt" && vsDoValidPrefix(name.substring(0, 6))) {
+      vsDoRecoverSession(name.substring(0, 6));
+    }
   }
 }
 
