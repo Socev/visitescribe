@@ -121,12 +121,19 @@ static void pocketOpenMenuV03() {
 
 static void pocketSinglePowerV03() {
   switch (state) {
-    case AppState::SYNC:
+    case AppState::SYNC: {
       if (vsSyncTouchLockedHook && vsSyncTouchLockedHook()) return;
+      const bool resultScreen =
+          syncPhase == SyncPhase::FAILED ||
+          syncPhase == SyncPhase::NO_CREDENTIALS ||
+          (vsSyncDoneHook && vsSyncDoneHook()) ||
+          (vsSyncRetryAllowedHook && vsSyncRetryAllowedHook());
+      if (!resultScreen) return;
       wifiOff();
       syncPhase = SyncPhase::NOT_STARTED;
       goHome();
       return;
+    }
 
     case AppState::SAVING:
       return;
@@ -156,6 +163,13 @@ static void pocketSinglePowerV03() {
       return;
 
     case AppState::ERROR:
+      if (!sdOk) {
+        sdOk = ensureStorage();
+        if (!sdOk) {
+          showStorageStatus();
+          return;
+        }
+      }
       goHome();
       return;
 
