@@ -42,7 +42,7 @@ static bool axp2101DirectOk = false;
 // Software double-click recogniser. We delay the single-click action briefly so
 // the first click can never start/stop a recording before we know whether a
 // second click follows.
-static constexpr uint32_t PWR_DOUBLE_CLICK_MS = 360;
+static constexpr uint32_t PWR_DOUBLE_CLICK_MS = 350;
 static bool pwrClickPendingV03 = false;
 static uint32_t pwrFirstClickMsV03 = 0;
 static uint32_t pwrWakeGuardUntilV03 = 0;
