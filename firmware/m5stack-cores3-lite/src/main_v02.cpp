@@ -93,6 +93,7 @@ enum class AppState : uint8_t {
   MENU, STATUS, DETAILS, SYNC, ERROR
 };
 enum class Mode : uint8_t { VISIT, ROUND, MEETING };
+enum class QuickChoice : uint8_t { PATIENT, MEETING, STOP };
 enum class SyncPhase : uint8_t { NOT_STARTED, NO_CREDENTIALS, CONNECTING_1, CONNECTING_2, CONNECTED, FAILED };
 enum class DisplayPower : uint8_t { ACTIVE, DIMMED, OFF };
 
@@ -122,8 +123,12 @@ bool touchWasDown = false;
 // a second patient.
 bool quickModeChoiceActive = false;
 bool visitPatientFlow = false;
+QuickChoice quickChoice = QuickChoice::PATIENT;
 uint32_t quickModeChoiceStartedMs = 0;
+uint32_t quickModeChoiceDeadlineMs = 0;
 static constexpr uint32_t QUICK_MODE_CHOICE_MS = 10000;
+static constexpr uint32_t QUICK_MODE_EXPLICIT_DWELL_MS = 3000;
+static constexpr uint32_t QUICK_MODE_STOP_DWELL_MS = 1200;
 
 bool lastSessionFalseStart = false;
 bool lastSessionSaved = false;
@@ -330,6 +335,10 @@ static void drawTouchButton(const Rect& r, const char* title,
 
   M5.Display.fillRoundRect(x, y, w, h, 8, fill);
   M5.Display.drawRoundRect(x, y, w, h, 8, border);
+  if (selected) {
+    M5.Display.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 7, border);
+    M5.Display.drawRoundRect(x + 2, y + 2, w - 4, h - 4, 6, border);
+  }
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextColor(text);
   M5.Display.setTextSize(strlen(title) <= 15 ? 2 : 1);
@@ -339,12 +348,6 @@ static void drawTouchButton(const Rect& r, const char* title,
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(primary ? C_WHITE : C_GREY);
     M5.Display.drawString(subtitle, x + w / 2, cy + 18);
-  }
-  if (selected) {
-    M5.Display.setTextDatum(middle_left);
-    M5.Display.setTextColor(C_VIOLET);
-    M5.Display.setTextSize(2);
-    M5.Display.drawString("OK", x + 12, y + h / 2);
   }
 }
 
@@ -410,7 +413,7 @@ void drawHeader(const char* status, const char* sub = nullptr) {
 }
 
 const char* modeTitle(Mode m) {
-  if (m == Mode::VISIT) return "Visite";
+  if (m == Mode::VISIT) return "Patiënt";
   if (m == Mode::ROUND) return "Patientronde";
   return "Vergadering";
 }
@@ -453,7 +456,7 @@ void drawHome() {
 
   centeredText(74, "Klaar voor", C_NAVY, 3);
   centeredText(104, "opname", C_NAVY, 3);
-  centeredText(134, "Standaard: Visite", C_GREY, 1);
+  centeredText(134, "Standaard: Patiënt", C_GREY, 1);
 
   centeredText(160, "Lokaal klaar voor gebruik", C_GREY, 1);
   drawPwrHints("1x PWR  -  Start", "2x PWR  -  Menu");
@@ -482,22 +485,53 @@ void drawRecording() {
   M5.Display.drawString("Neemt op", 38, 57);
 
   if (quickModeChoiceActive) {
-    const uint32_t used = millis() - quickModeChoiceStartedMs;
-    const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
-        ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
+    const int32_t leftMs =
+        static_cast<int32_t>(quickModeChoiceDeadlineMs - millis());
+    const uint32_t remaining =
+        leftMs <= 0 ? 0 : (static_cast<uint32_t>(leftMs) + 999) / 1000;
 
-    Rect visitChoice{4, 70, 312, 48};
-    Rect meetingChoice{4, 120, 312, 48};
-    drawTouchButton(
-        visitChoice, "Visite", "standaard", false, true);
-    drawTouchButton(
-        meetingChoice, "Vergadering", nullptr, false, false);
+    Rect patientChoice{4, 68, 312, 44};
+    Rect meetingChoice{4, 114, 312, 44};
+    Rect stopChoice{236, 160, 76, 24};
 
-    char line[56];
-    snprintf(line, sizeof(line), "Zonder keuze: Visite - %lus",
+    drawTouchButton(
+        patientChoice, "Patiënt", "standaard", false,
+        quickChoice == QuickChoice::PATIENT);
+    drawTouchButton(
+        meetingChoice, "Vergadering", nullptr, false,
+        quickChoice == QuickChoice::MEETING);
+
+    const bool stopSelected = quickChoice == QuickChoice::STOP;
+    const uint16_t stopFill = stopSelected ? C_RED : C_WHITE;
+    const uint16_t stopText = stopSelected ? C_WHITE : C_RED;
+    M5.Display.fillRoundRect(
+        stopChoice.x, stopChoice.y, stopChoice.w, stopChoice.h, 7, stopFill);
+    M5.Display.drawRoundRect(
+        stopChoice.x, stopChoice.y, stopChoice.w, stopChoice.h, 7, C_RED);
+    if (stopSelected) {
+      M5.Display.drawRoundRect(
+          stopChoice.x + 1, stopChoice.y + 1,
+          stopChoice.w - 2, stopChoice.h - 2, 6, C_RED);
+      M5.Display.drawRoundRect(
+          stopChoice.x + 2, stopChoice.y + 2,
+          stopChoice.w - 4, stopChoice.h - 4, 5, C_RED);
+    }
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(stopText);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString(
+        "STOP", stopChoice.x + stopChoice.w / 2,
+        stopChoice.y + stopChoice.h / 2);
+
+    char line[40];
+    snprintf(line, sizeof(line), "Keuze over %lus",
              (unsigned long)remaining);
-    centeredText(176, line, C_GREY, 1);
-    drawPwrHints("1x PWR  -  Stop");
+    M5.Display.setTextDatum(middle_left);
+    M5.Display.setTextColor(C_GREY);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString(line, 16, 172);
+
+    drawPwrHints("PWR  -  volgende keuze");
     lastUiSecond = activeElapsedMs() / 1000;
     return;
   }
@@ -506,7 +540,7 @@ void drawRecording() {
   if (selectedMode == Mode::MEETING) {
     snprintf(context, sizeof(context), "Vergadering");
   } else {
-    snprintf(context, sizeof(context), "Visite - Patient %u", patientNumber);
+    snprintf(context, sizeof(context), "Patiënt %u", patientNumber);
   }
   centeredText(84, context, C_NAVY, 2);
 
@@ -531,7 +565,7 @@ void drawRecording() {
       "1x PWR  -  Stop",
       selectedMode == Mode::MEETING
           ? "2x PWR  -  Markeer"
-          : "2x PWR  -  Volgende patient");
+          : "2x PWR  -  Volgende patiënt");
   lastUiSecond = activeElapsedMs() / 1000;
 }
 
@@ -574,9 +608,9 @@ void drawFinished() {
     if (selectedMode == Mode::MEETING) {
       snprintf(context, sizeof(context), "Vergadering");
     } else if (patientNumber <= 1) {
-      snprintf(context, sizeof(context), "Visite - 1 patient");
+      snprintf(context, sizeof(context), "Patiënt - 1");
     } else {
-      snprintf(context, sizeof(context), "Visite - %u patienten", patientNumber);
+      snprintf(context, sizeof(context), "Patiënten - %u", patientNumber);
     }
     centeredText(146, context, C_NAVY, 1);
     centeredText(166, "Nog te verzenden", C_VIOLET, 1);
@@ -711,16 +745,20 @@ static void updateRecordingDynamic() {
   if (state != AppState::RECORDING) return;
 
   if (quickModeChoiceActive) {
-    const uint32_t used = millis() - quickModeChoiceStartedMs;
-    const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
-        ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
-    char line[56];
-    snprintf(line, sizeof(line), "Zonder keuze: Visite - %lus",
+    const int32_t leftMs =
+        static_cast<int32_t>(quickModeChoiceDeadlineMs - millis());
+    const uint32_t remaining =
+        leftMs <= 0 ? 0 : (static_cast<uint32_t>(leftMs) + 999) / 1000;
+    char line[40];
+    snprintf(line, sizeof(line), "Keuze over %lus",
              (unsigned long)remaining);
 
-    // Only repaint the countdown strip; never clear/redraw the full screen.
-    M5.Display.fillRect(0, 166, SCREEN_W, 18, C_WHITE);
-    centeredText(176, line, C_GREY, 1);
+    // Only repaint the countdown text; the choice cards stay untouched.
+    M5.Display.fillRect(12, 160, 210, 24, C_WHITE);
+    M5.Display.setTextDatum(middle_left);
+    M5.Display.setTextColor(C_GREY);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString(line, 16, 172);
     lastUiSecond = activeElapsedMs() / 1000;
     return;
   }
@@ -1051,16 +1089,20 @@ bool startNewSession(Mode mode) {
 }
 
 bool startQuickSession() {
-  // Capture starts immediately. VISITE is the default so doing nothing for ten
-  // seconds still produces a valid patient recording.
+  // Capture starts immediately. PATIENT is the default; the chooser remains
+  // visible for ten seconds unless the user explicitly changes the selection.
   visitPatientFlow = true;
   quickModeChoiceActive = true;
+  quickChoice = QuickChoice::PATIENT;
   quickModeChoiceStartedMs = millis();
+  quickModeChoiceDeadlineMs =
+      quickModeChoiceStartedMs + QUICK_MODE_CHOICE_MS;
 
   if (!startNewSession(Mode::VISIT)) {
     quickModeChoiceActive = false;
     visitPatientFlow = false;
     quickModeChoiceStartedMs = 0;
+    quickModeChoiceDeadlineMs = 0;
     return false;
   }
   return true;
@@ -1072,7 +1114,47 @@ void selectQuickMode(Mode mode) {
   if (mode == Mode::MEETING) {
     selectedMode = Mode::MEETING;
     visitPatientFlow = false;
+    quickChoice = QuickChoice::MEETING;
+  } else {
+    selectedMode = Mode::VISIT;
+    visitPatientFlow = true;
+    quickChoice = QuickChoice::PATIENT;
+  }
 
+  // An explicit choice stays on screen for a few seconds. This makes touch
+  // selection feel confirmed rather than disappearing immediately, and still
+  // gives the user time to switch back.
+  quickModeChoiceDeadlineMs =
+      millis() + QUICK_MODE_EXPLICIT_DWELL_MS;
+  lastUserActivityMs = millis();
+  screenDirty = true;
+}
+
+void selectQuickStop() {
+  if (!quickModeChoiceActive || !sessionOpen) return;
+  quickChoice = QuickChoice::STOP;
+  quickModeChoiceDeadlineMs =
+      millis() + QUICK_MODE_STOP_DWELL_MS;
+  lastUserActivityMs = millis();
+  screenDirty = true;
+}
+
+void cycleQuickChoice() {
+  if (!quickModeChoiceActive || !sessionOpen) return;
+
+  if (quickChoice == QuickChoice::PATIENT) {
+    selectQuickMode(Mode::MEETING);
+  } else if (quickChoice == QuickChoice::MEETING) {
+    selectQuickStop();
+  } else {
+    selectQuickMode(Mode::VISIT);
+  }
+}
+
+static void commitQuickRecordingMode() {
+  if (!quickModeChoiceActive || !sessionOpen) return;
+
+  if (selectedMode == Mode::MEETING) {
 #ifndef VISITESCRIBE_DIRECT_OPUS
     // The WAV backend starts before the type choice, so only its final rename
     // target changes. Direct Opus chunks use mode-neutral chunk names.
@@ -1088,14 +1170,21 @@ void selectQuickMode(Mode mode) {
 
   quickModeChoiceActive = false;
   quickModeChoiceStartedMs = 0;
+  quickModeChoiceDeadlineMs = 0;
   lastUserActivityMs = millis();
   screenDirty = true;
 }
 
 void serviceQuickModeChoiceTimeout() {
   if (!quickModeChoiceActive) return;
-  if (millis() - quickModeChoiceStartedMs < QUICK_MODE_CHOICE_MS) return;
-  selectQuickMode(Mode::VISIT);
+  if (static_cast<int32_t>(quickModeChoiceDeadlineMs - millis()) > 0) return;
+
+  const bool stopSelected = quickChoice == QuickChoice::STOP;
+  commitQuickRecordingMode();
+
+  if (stopSelected && sessionOpen) {
+    stopSession();
+  }
 }
 
 void togglePrivacy() {
@@ -1152,7 +1241,7 @@ void addMarkerOrNext() {
     state = AppState::RECORDING;
     logEvent("patient_started", off);
     char toast[48];
-    snprintf(toast, sizeof(toast), "Patient %u gestart", patientNumber);
+    snprintf(toast, sizeof(toast), "Patiënt %u gestart", patientNumber);
     setRecordingToast(toast);
   } else {
     ++markerCount;
@@ -1188,6 +1277,7 @@ void stopSession() {
   sessionOpen = false;
   quickModeChoiceActive = false;
   quickModeChoiceStartedMs = 0;
+  quickModeChoiceDeadlineMs = 0;
 
   if (off < FALSE_START_LIMIT_MS) {
     const bool removed = discardCurrentFalseStart();
@@ -1269,7 +1359,9 @@ void goHome() {
   sessionOpen = false;
   quickModeChoiceActive = false;
   visitPatientFlow = false;
+  quickChoice = QuickChoice::PATIENT;
   quickModeChoiceStartedMs = 0;
+  quickModeChoiceDeadlineMs = 0;
   recordingToast[0] = '\0';
   recordingToastUntilMs = 0;
   eventsPath[0] = wavTmpPath[0] = wavFinalPath[0] = '\0';
