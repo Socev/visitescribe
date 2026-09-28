@@ -261,3 +261,45 @@ are marked `quarantined_no_audio` after detection. That makes them terminal
 for automatic queue scans instead of showing the same historical session
 numbers on every sync. Removing that session's `_sync.txt` manually makes it
 eligible for a deliberate retry/recovery attempt.
+
+## Brian UX refresh (September 2026)
+
+The current CoreS3-Lite direct-Opus build uses the white, pocket-first Brian UI.
+
+Key behavior:
+
+- boot keeps the existing Brian robot/OurMind composition, but plays the
+  animation at half speed and holds the completed Brian frame for about three
+  seconds;
+- functional screens use a white background, near-black text, restrained
+  violet accents and a fixed Brian/battery top bar;
+- HOME shows **Klaar voor opname**, the Visite default and the number of local
+  recordings still waiting to be sent;
+- one PWR starts recording; double PWR opens the menu; a complete PWR gesture
+  used only to wake a sleeping display is consumed and cannot leak into the
+  next action;
+- the VISITE/VERGADERING choice remains available for 10 seconds while audio is
+  already recording; a resting finger cannot choose a mode until it has first
+  been released and touched again;
+- normal recording shows `Visite - Patient N` from patient 1 onward, a large
+  per-patient timer, or Vergadering plus marker count; touch is not polled;
+- double PWR during VISITE starts the next patient and resets the displayed
+  patient timer; during VERGADERING it records a marker;
+- stopping first shows **Opname bewaren...** and only shows **Opgeslagen** after
+  the local Opus finalization succeeds;
+- user-stopped recordings shorter than 10 seconds are treated as **Valse
+  start** and all files belonging to that session are deleted after the encoder
+  has safely stopped;
+- audio/storage failures during an active recording stop the capture and show a
+  blocking truthful error rather than a success screen;
+- MENU is **Verzenden / Apparaatstatus / Terug**; technical codec, board and
+  network information lives under Details;
+- recording now dims after about 10 seconds and sleeps the LCD after about 30
+  seconds; ordinary menus dim after about 15 seconds. Active server sync never
+  dims or sleeps;
+- server sync presents user-level phases and recording progress instead of
+  session IDs/chunk IDs. Touch is not polled while the synchronous upload queue
+  is active.
+
+The direct-Opus audio format, API v4 contract, retry/resume behavior and PC/USB
+sync protocol are unchanged by this UI work.
