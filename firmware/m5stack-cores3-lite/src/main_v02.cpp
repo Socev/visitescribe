@@ -585,7 +585,10 @@ void drawFinished() {
     } else {
       snprintf(context, sizeof(context), "Visite - %u patienten", patientNumber);
     }
-    centeredText(148, context, C_NAVY, 1);
+    centeredText(146, context, C_NAVY, 1);
+    if (pendingCountUi() > 0) {
+      centeredText(166, "Nog te verzenden", C_VIOLET, 1);
+    }
   }
 
   drawPwrHints("1x PWR  -  Nieuwe opname", "2x PWR  -  Menu");
