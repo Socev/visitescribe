@@ -85,7 +85,9 @@ static bool readTouchV03(int& x, int& y, int& rawX, int& rawY) {
 
 static void showStorageStatus() {
   refreshBattery();
-  state = AppState::STATUS;
+  uiErrorTitle = "Opnemen niet mogelijk";
+  uiErrorDetail = "Opslag niet beschikbaar";
+  state = AppState::ERROR;
   screenDirty = true;
 }
 
@@ -354,11 +356,12 @@ void VISITESCRIBE_V03_SETUP_NAME() {
   // the controller on every ~5 ms loop iteration in a pocket/recording state.
   M5.Touch.end();
 
-  // setup_v02 historically replaced the whole UI with a static SD error page
-  // when mounting failed. Keep the recorder UI accessible instead; MENU >
-  // STATUS will clearly show MICROSD FOUT, and START/PWR will route there too.
+  // Never present "Klaar voor opname" when local recording cannot be made.
+  // Startup storage failure is a blocking, truthful error state.
   if (!sdOk) {
-    state = AppState::HOME;
+    uiErrorTitle = "Opnemen niet mogelijk";
+    uiErrorDetail = "Opslag niet beschikbaar";
+    state = AppState::ERROR;
     screenDirty = true;
     render(true);
   }
