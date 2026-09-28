@@ -1290,49 +1290,65 @@ bool wakeOnlyIfOff() {
 void handleTouch(int x, int y) {
   switch (state) {
     case AppState::HOME:
-      if (HOME_VISIT.contains(x,y)) { selectedMode = Mode::VISIT; state = AppState::MODE_CONFIRM; screenDirty = true; }
-      else if (HOME_ROUND.contains(x,y)) { selectedMode = Mode::ROUND; state = AppState::MODE_CONFIRM; screenDirty = true; }
-      else if (HOME_MEETING.contains(x,y)) { selectedMode = Mode::MEETING; state = AppState::MODE_CONFIRM; screenDirty = true; }
-      else if (HOME_MENU.contains(x,y)) { state = AppState::MENU; screenDirty = true; }
+      // Pocket-first HOME deliberately ignores touch.
       break;
     case AppState::MODE_CONFIRM:
       if (TWO_TOP.contains(x,y)) startNewSession(selectedMode);
       else if (TWO_BOTTOM.contains(x,y)) goHome();
       break;
     case AppState::RECORDING:
-      if (THREE_TOP.contains(x,y)) togglePrivacy();
-      else if (THREE_MIDDLE.contains(x,y)) addMarkerOrNext();
-      else if (THREE_BOTTOM.contains(x,y)) stopSession();
-      break;
     case AppState::PAUSED:
-      if (THREE_TOP.contains(x,y)) togglePrivacy();
-      else if (THREE_MIDDLE.contains(x,y)) addMarkerOrNext();
-      else if (THREE_BOTTOM.contains(x,y)) stopSession();
-      break;
+    case AppState::SAVING:
     case AppState::FINISHED:
-      if (TWO_TOP.contains(x,y)) resumeSession();
-      else if (TWO_BOTTOM.contains(x,y)) goHome();
+      // Active/saved pocket flow is PWR-only.
       break;
     case AppState::MENU:
-      if (THREE_TOP.contains(x,y)) { refreshBattery(); state = AppState::STATUS; screenDirty = true; }
-      else if (THREE_MIDDLE.contains(x,y)) beginSync();
-      else if (THREE_BOTTOM.contains(x,y)) goHome();
+      if (THREE_TOP.contains(x,y)) beginSync();
+      else if (THREE_MIDDLE.contains(x,y)) {
+        refreshBattery();
+        state = AppState::STATUS;
+        screenDirty = true;
+      } else if (THREE_BOTTOM.contains(x,y)) {
+        goHome();
+      }
       break;
     case AppState::STATUS:
-      if (STATUS_BACK.contains(x,y)) { state = AppState::MENU; screenDirty = true; }
+      if (STATUS_DETAILS.contains(x,y)) {
+        state = AppState::DETAILS;
+        lastUserActivityMs = millis();
+        screenDirty = true;
+      } else if (STATUS_BACK.contains(x,y)) {
+        state = AppState::MENU;
+        lastUserActivityMs = millis();
+        screenDirty = true;
+      }
+      break;
+    case AppState::DETAILS:
+      if (STATUS_BACK.contains(x,y)) {
+        state = AppState::STATUS;
+        lastUserActivityMs = millis();
+        screenDirty = true;
+      }
       break;
     case AppState::SYNC:
-      if (vsSyncTouchLockedHook && vsSyncTouchLockedHook()) {
-        // Upload in progress: touch is informational only. Never let a wake/
-        // glance tap tear down Wi-Fi underneath a server request.
-        break;
-      }
-      if (SYNC_RETRY.contains(x,y)) startWifiAttempt(0);
-      else if (SYNC_BACK.contains(x,y)) {
+      if (vsSyncTouchLockedHook && vsSyncTouchLockedHook()) break;
+      if (SYNC_RETRY.contains(x,y) &&
+          (!vsSyncRetryAllowedHook || vsSyncRetryAllowedHook())) {
+        startWifiAttempt(0);
+      } else if (SYNC_BACK.contains(x,y) ||
+                 (vsSyncDoneHook && vsSyncDoneHook())) {
         wifiOff();
         syncPhase = SyncPhase::NOT_STARTED;
-        state = AppState::MENU;
+        goHome();
+      }
+      break;
+    case AppState::ERROR:
+      if (STATUS_DETAILS.contains(x,y)) {
+        refreshBattery();
+        state = AppState::STATUS;
         screenDirty = true;
+      } else if (STATUS_BACK.contains(x,y)) {
+        goHome();
       }
       break;
   }
@@ -1372,26 +1388,35 @@ void serviceInputs() {
 }
 
 void serviceDisplayPower() {
-  // Keep the complete sync screen visible. Uploads can run for minutes and the
-  // progress display is useful; dimming previously tempted a wake tap that
-  // could hit TERUG and abort the upload.
+  // Sync is intentionally always visible. A user looking at upload progress
+  // must never need to wake the display just to discover whether it finished.
   if (state == AppState::SYNC) return;
 
-  // Keep the complete 10-second mode chooser visible.
+  // Keep the entire ten-second type chooser awake and touchable.
   if (quickModeChoiceActive) return;
+
+  // SAVING and blocking errors stay readable while the local result is being
+  // established. FINISHED auto-navigates before its normal dim timeout.
+  if (state == AppState::SAVING || state == AppState::ERROR) return;
 
   const uint32_t idle = millis() - lastUserActivityMs;
   const bool recording =
       state == AppState::RECORDING || state == AppState::PAUSED;
   const bool menuLike =
-      state == AppState::MENU || state == AppState::STATUS || state == AppState::SYNC;
+      state == AppState::MENU ||
+      state == AppState::STATUS ||
+      state == AppState::DETAILS;
+  const bool homeLike =
+      state == AppState::HOME || state == AppState::FINISHED;
 
-  const uint32_t dimMs = recording ? 1500 : (menuLike ? 12000 : 4000);
-  const uint32_t offMs = recording ? 3500 : (menuLike ? 30000 : 10000);
+  // Validated starting values from the UX brief, with the user's explicit
+  // correction that recording must not dim/go dark after only a few seconds.
+  const uint32_t dimMs = recording ? 10000UL :
+      (menuLike ? 15000UL : (homeLike ? 15000UL : 15000UL));
+  const uint32_t offMs = recording ? 30000UL :
+      (menuLike ? 30000UL : (homeLike ? 30000UL : 30000UL));
 
   if (idle >= offMs && displayPower != DisplayPower::OFF) {
-    // Real LCD sleep saves more than brightness=0 and also stops invisible
-    // display traffic until the next physical PWR wake.
     M5.Display.sleep();
     displayPower = DisplayPower::OFF;
   } else if (idle >= dimMs && displayPower == DisplayPower::ACTIVE) {
