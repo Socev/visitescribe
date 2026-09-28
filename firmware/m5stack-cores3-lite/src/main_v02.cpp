@@ -83,8 +83,8 @@ static const Rect TWO_BOTTOM   {0,140, 320,100};
 static const Rect THREE_TOP    {0, 40, 320, 67};
 static const Rect THREE_MIDDLE {0,107, 320, 67};
 static const Rect THREE_BOTTOM {0,174, 320, 66};
-static const Rect STATUS_DETAILS {16,142,288,42};
-static const Rect STATUS_BACK    {16,190,288,42};
+static const Rect STATUS_DETAILS {16,148,288,40};
+static const Rect STATUS_BACK    {16,194,288,40};
 static const Rect SYNC_RETRY     {16,140,288,42};
 static const Rect SYNC_BACK      {16,190,288,42};
 
@@ -496,8 +496,8 @@ void drawRecording() {
     const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
         ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
 
-    Rect visitChoice{4, 74, 312, 52};
-    Rect meetingChoice{4, 128, 312, 52};
+    Rect visitChoice{4, 70, 312, 48};
+    Rect meetingChoice{4, 120, 312, 48};
     drawTouchButton(
         visitChoice, "Visite", "standaard", false, true);
     drawTouchButton(
@@ -506,7 +506,7 @@ void drawRecording() {
     char line[56];
     snprintf(line, sizeof(line), "Zonder keuze: Visite - %lus",
              (unsigned long)remaining);
-    centeredText(178, line, C_GREY, 1);
+    centeredText(176, line, C_GREY, 1);
     drawPwrHints("1x PWR  -  Stop");
     lastUiSecond = activeElapsedMs() / 1000;
     return;
@@ -618,26 +618,26 @@ void drawStatus() {
   M5.Display.setTextColor(
       (batteryPct >= 0 && batteryPct <= 15) ? C_AMBER : C_NAVY);
   M5.Display.setTextSize(1);
-  M5.Display.drawString(line, 24, 67);
+  M5.Display.drawString(line, 24, 64);
 
   M5.Display.setTextColor(sdOk ? C_NAVY : C_RED);
   M5.Display.drawString(
       sdOk ? "Opslag                    Beschikbaar"
            : "Opslag                    Fout",
-      24, 92);
+      24, 87);
 
   const uint32_t pending = pendingCountUi();
   snprintf(line, sizeof(line), "Te verzenden              %lu",
            (unsigned long)pending);
   M5.Display.setTextColor(C_NAVY);
-  M5.Display.drawString(line, 24, 117);
+  M5.Display.drawString(line, 24, 110);
 
   const bool wifi = WiFi.status() == WL_CONNECTED;
   M5.Display.setTextColor(C_NAVY);
   M5.Display.drawString(
       wifi ? "Wifi                      Verbonden"
            : "Wifi                      Niet verbonden",
-      24, 142);
+      24, 133);
 
   drawTouchButton(STATUS_DETAILS, "Details");
   drawTouchButton(STATUS_BACK, "Terug");
