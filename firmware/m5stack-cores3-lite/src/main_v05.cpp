@@ -210,11 +210,22 @@ void VISITESCRIBE_V05_LOOP_NAME() {
     if (old != batteryPct && state == AppState::STATUS) screenDirty = true;
   }
 
-  if (state == AppState::FINISHED && millis() - finishedAtMs >= FINISHED_AUTO_HOME_MS) {
+  if (state == AppState::FINISHED && finishedAtMs) {
+    const uint32_t holdMs =
+        lastSessionFalseStart ? FALSE_START_AUTO_HOME_MS : FINISHED_AUTO_HOME_MS;
+    if (millis() - finishedAtMs >= holdMs) {
+      goHome();
+    }
+  }
+
+  if ((state == AppState::MENU ||
+       state == AppState::STATUS ||
+       state == AppState::DETAILS) &&
+      millis() - lastUserActivityMs >= MENU_AUTO_HOME_MS) {
     goHome();
   }
 
-  // MENU has a four-row renderer introduced in v0.3. Never call the legacy
+  // MENU has a three-row pocket renderer. Never call the legacy
   // render() while MENU is active: asynchronous workers (such as the Opus
   // load probe) can set screenDirty between input handling and this point,
   // which otherwise lets the inherited three-row drawMenu() overwrite the
