@@ -200,6 +200,9 @@ void VISITESCRIBE_V05_LOOP_NAME() {
   }
 
   serviceAudio();
+  if (state == AppState::RECORDING && audioError) {
+    handleActiveRecordingError();
+  }
   serviceSyncV05();
 
   const uint32_t batteryRefreshMs =
