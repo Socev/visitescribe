@@ -285,13 +285,16 @@ static void serviceInputsV03() {
 
   serviceQuickModeChoiceTimeout();
 
+  const bool syncTouchAllowed =
+      state == AppState::SYNC &&
+      !(vsSyncTouchLockedHook && vsSyncTouchLockedHook());
   const bool touchAllowed =
       displayPower != DisplayPower::OFF &&
       (quickModeChoiceActive ||
        state == AppState::MENU ||
        state == AppState::STATUS ||
        state == AppState::DETAILS ||
-       state == AppState::SYNC ||
+       syncTouchAllowed ||
        state == AppState::ERROR);
 
   int tx = 0, ty = 0, rawX = 0, rawY = 0;
