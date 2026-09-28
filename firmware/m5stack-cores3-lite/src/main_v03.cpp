@@ -50,11 +50,12 @@ static uint32_t pwrWakeGuardUntilV03 = 0;
 // Type choice is committed on release inside the same card. This prevents a
 // finger already resting on the display from selecting a mode on screen-open.
 static bool quickTouchArmedV03 = false;
-static uint8_t quickTouchChoiceV03 = 0; // 1=visit, 2=meeting
+static uint8_t quickTouchChoiceV03 = 0; // 1=patient, 2=meeting, 3=stop
 static int quickTouchLastXV03 = 0;
 static int quickTouchLastYV03 = 0;
-static const Rect QUICK_VISIT_TOUCH {4, 70, 312, 48};
-static const Rect QUICK_MEETING_TOUCH {4, 120, 312, 48};
+static const Rect QUICK_PATIENT_TOUCH {4, 68, 312, 44};
+static const Rect QUICK_MEETING_TOUCH {4, 114, 312, 44};
+static const Rect QUICK_STOP_TOUCH {236, 160, 76, 24};
 
 // Later sync layers may attach a synthetic upload benchmark here. Keeping this
 // as a hook means older recorder layers still compile and simply fall back to
@@ -140,9 +141,13 @@ static void pocketSinglePowerV03() {
 
     case AppState::RECORDING:
     case AppState::PAUSED:
-      // PWR during the ten-second chooser is still STOP. If the resulting
-      // recording is under ten seconds it will be discarded as a false start.
-      if (quickModeChoiceActive) selectQuickMode(Mode::VISIT);
+      // During the chooser every physical PWR press is handled immediately in
+      // serviceInputsV03() as a selection cycle. This fallback is only for an
+      // already-queued single click.
+      if (quickModeChoiceActive) {
+        cycleQuickChoice();
+        return;
+      }
       stopSession();
       return;
 
@@ -243,7 +248,19 @@ static void serviceInputsV03() {
     const AppState before = state;
     const uint32_t now = millis();
 
-    if (displayPower == DisplayPower::OFF && wakeOnlyIfOff()) {
+    if (quickModeChoiceActive && state == AppState::RECORDING) {
+      // While the ten-second chooser is visible, PWR is not interpreted as a
+      // single/double-click gesture. Every physical press advances exactly one
+      // visible choice: Patiënt -> Vergadering -> STOP -> Patiënt.
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      pwrWakeGuardUntilV03 = 0;
+      noteActivity();
+      cycleQuickChoice();
+      Serial.printf(
+          "PWR chooser-cycle choice=%u\n",
+          (unsigned)quickChoice);
+    } else if (displayPower == DisplayPower::OFF && wakeOnlyIfOff()) {
       pwrClickPendingV03 = false;
       pwrFirstClickMsV03 = 0;
       pwrWakeGuardUntilV03 = now + PWR_DOUBLE_CLICK_MS;
@@ -313,8 +330,9 @@ static void serviceInputsV03() {
     if (quickModeChoiceActive) {
       quickTouchArmedV03 = true;
       quickTouchChoiceV03 =
-          QUICK_VISIT_TOUCH.contains(tx, ty) ? 1 :
-          (QUICK_MEETING_TOUCH.contains(tx, ty) ? 2 : 0);
+          QUICK_PATIENT_TOUCH.contains(tx, ty) ? 1 :
+          (QUICK_MEETING_TOUCH.contains(tx, ty) ? 2 :
+           (QUICK_STOP_TOUCH.contains(tx, ty) ? 3 : 0));
       if (!quickTouchChoiceV03) quickTouchArmedV03 = false;
     } else if (state == AppState::MENU) {
       handleMenuTouchV03(tx, ty);
@@ -332,19 +350,26 @@ static void serviceInputsV03() {
   }
 
   if (!touchDown && touchWasDown && quickTouchArmedV03) {
-    const bool visitCommit =
+    const bool patientCommit =
         quickTouchChoiceV03 == 1 &&
-        QUICK_VISIT_TOUCH.contains(quickTouchLastXV03, quickTouchLastYV03);
+        QUICK_PATIENT_TOUCH.contains(
+            quickTouchLastXV03, quickTouchLastYV03);
     const bool meetingCommit =
         quickTouchChoiceV03 == 2 &&
-        QUICK_MEETING_TOUCH.contains(quickTouchLastXV03, quickTouchLastYV03);
+        QUICK_MEETING_TOUCH.contains(
+            quickTouchLastXV03, quickTouchLastYV03);
+    const bool stopCommit =
+        quickTouchChoiceV03 == 3 &&
+        QUICK_STOP_TOUCH.contains(
+            quickTouchLastXV03, quickTouchLastYV03);
 
     quickTouchArmedV03 = false;
     quickTouchChoiceV03 = 0;
 
     if (quickModeChoiceActive) {
-      if (visitCommit) selectQuickMode(Mode::VISIT);
+      if (patientCommit) selectQuickMode(Mode::VISIT);
       else if (meetingCommit) selectQuickMode(Mode::MEETING);
+      else if (stopCommit) selectQuickStop();
     }
   }
 
