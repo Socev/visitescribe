@@ -53,8 +53,8 @@ static bool quickTouchArmedV03 = false;
 static uint8_t quickTouchChoiceV03 = 0; // 1=visit, 2=meeting
 static int quickTouchLastXV03 = 0;
 static int quickTouchLastYV03 = 0;
-static const Rect QUICK_VISIT_TOUCH {4, 74, 312, 52};
-static const Rect QUICK_MEETING_TOUCH {4, 128, 312, 52};
+static const Rect QUICK_VISIT_TOUCH {4, 70, 312, 48};
+static const Rect QUICK_MEETING_TOUCH {4, 120, 312, 48};
 
 // Later sync layers may attach a synthetic upload benchmark here. Keeping this
 // as a hook means older recorder layers still compile and simply fall back to
