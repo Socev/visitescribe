@@ -280,7 +280,7 @@ static void showBrianBootAnimation() {
 
   for (int frame = 0; frame < 14; ++frame) {
     drawBrianRobotFrame(frame);
-    delay(45);
+    delay(90);
   }
 
   M5.Display.fillRect(70, 198, 170, 35, C_WHITE);
@@ -291,22 +291,86 @@ static void showBrianBootAnimation() {
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(C_GREY);
   M5.Display.drawString("ready to listen", 155, 231);
-  delay(360);
+  delay(3000);
 }
 
-void zone(const Rect& r, const char* title, uint16_t fill, uint16_t fg, const char* subtitle = nullptr) {
-  M5.Display.fillRect(r.x, r.y, r.w, r.h, fill);
-  M5.Display.drawFastHLine(r.x, r.y, r.w, C_WHITE);
+void zone(const Rect& r, const char* title, uint16_t fill, uint16_t fg,
+          const char* subtitle = nullptr) {
+  // Legacy helper retained for compatibility with older/diagnostic screens.
+  // Functional Brian screens use white cards with restrained accents.
+  M5.Display.fillRect(r.x, r.y, r.w, r.h, C_WHITE);
+  const int inset = 8;
+  M5.Display.fillRoundRect(
+      r.x + inset, r.y + 4, r.w - inset * 2, r.h - 8, 8, fill);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextColor(fg);
-  uint8_t size = strlen(title) <= 8 ? 3 : (strlen(title) <= 14 ? 2 : 1);
+  const uint8_t size = strlen(title) <= 12 ? 2 : 1;
   M5.Display.setTextSize(size);
-  int cy = r.y + r.h / 2 - (subtitle ? 7 : 0);
+  const int cy = r.y + r.h / 2 - (subtitle ? 7 : 0);
   M5.Display.drawString(title, r.x + r.w / 2, cy);
   if (subtitle) {
     M5.Display.setTextSize(1);
-    M5.Display.drawString(subtitle, r.x + r.w / 2, cy + 20);
+    M5.Display.drawString(subtitle, r.x + r.w / 2, cy + 19);
   }
+}
+
+static void drawTouchButton(const Rect& r, const char* title,
+                            const char* subtitle = nullptr,
+                            bool primary = false,
+                            bool selected = false) {
+  const int x = r.x + 12;
+  const int y = r.y + 5;
+  const int w = r.w - 24;
+  const int h = r.h - 10;
+  const uint16_t fill = primary ? C_NAVY :
+      (selected ? C_VIOLET_SOFT : C_WHITE);
+  const uint16_t border = primary ? C_NAVY :
+      (selected ? C_VIOLET : C_LINE);
+  const uint16_t text = primary ? C_WHITE : C_NAVY;
+
+  M5.Display.fillRoundRect(x, y, w, h, 8, fill);
+  M5.Display.drawRoundRect(x, y, w, h, 8, border);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(text);
+  M5.Display.setTextSize(strlen(title) <= 15 ? 2 : 1);
+  int cy = y + h / 2 - (subtitle ? 7 : 0);
+  M5.Display.drawString(title, x + w / 2, cy);
+  if (subtitle) {
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(primary ? C_WHITE : C_GREY);
+    M5.Display.drawString(subtitle, x + w / 2, cy + 18);
+  }
+  if (selected) {
+    M5.Display.setTextDatum(middle_left);
+    M5.Display.setTextColor(C_VIOLET);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("OK", x + 12, y + h / 2);
+  }
+}
+
+static void drawPwrHints(const char* first, const char* second = nullptr) {
+  M5.Display.fillRect(0, 184, SCREEN_W, 56, C_WHITE);
+  M5.Display.drawFastHLine(16, 184, SCREEN_W - 32, C_LINE);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(C_NAVY);
+  M5.Display.setTextSize(1);
+  if (second) {
+    M5.Display.drawString(first, SCREEN_W / 2, 202);
+    M5.Display.setTextColor(C_GREY);
+    M5.Display.drawString(second, SCREEN_W / 2, 224);
+  } else {
+    M5.Display.drawString(first, SCREEN_W / 2, 214);
+  }
+}
+
+static uint32_t pendingCountUi() {
+  return vsPendingCountHook ? vsPendingCountHook() : 0;
+}
+
+static void setRecordingToast(const char* text, uint32_t ms = 1500) {
+  snprintf(recordingToast, sizeof(recordingToast), "%s", text ? text : "");
+  recordingToastUntilMs = millis() + ms;
+  screenDirty = true;
 }
 
 void refreshBattery() {
@@ -318,31 +382,37 @@ void refreshBattery() {
 void drawHeader(const char* status, const char* sub = nullptr) {
   M5.Display.fillRect(0, 0, SCREEN_W, HEADER_H, C_WHITE);
   M5.Display.setTextDatum(top_left);
-  M5.Display.setTextColor(C_BLUE);
+  M5.Display.setTextColor(C_NAVY);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("Brian | VisiteScribe", 8, 5);
+  M5.Display.drawString("Brian", 10, 7);
+
   char batt[24];
   if (batteryPct < 0) snprintf(batt, sizeof(batt), "--%%");
-  else snprintf(batt, sizeof(batt), "%s%d%%", batteryCharging ? "+" : "", batteryPct);
+  else snprintf(batt, sizeof(batt), "%s%d%%",
+                batteryCharging ? "+" : "", batteryPct);
   M5.Display.setTextDatum(top_right);
-  M5.Display.setTextColor((batteryPct >= 0 && batteryPct <= 15) ? C_RED : C_NAVY);
-  M5.Display.drawString(batt, 312, 5);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextColor(C_NAVY);
-  M5.Display.setTextSize(strlen(status) <= 21 ? 2 : 1);
-  M5.Display.drawString(status, SCREEN_W / 2, sub ? 23 : 27);
-  if (sub) {
+  M5.Display.setTextColor(
+      (batteryPct >= 0 && batteryPct <= 15) ? C_AMBER : C_GREY);
+  M5.Display.drawString(batt, 310, 7);
+
+  if (status && status[0]) {
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(C_NAVY);
+    M5.Display.setTextSize(strlen(status) <= 24 ? 2 : 1);
+    M5.Display.drawString(status, SCREEN_W / 2, sub ? 23 : 28);
+  }
+  if (sub && sub[0]) {
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(C_GREY);
-    M5.Display.drawString(sub, SCREEN_W / 2, 35);
+    M5.Display.drawString(sub, SCREEN_W / 2, 36);
   }
   M5.Display.drawFastHLine(0, HEADER_H - 1, SCREEN_W, C_LINE);
 }
 
 const char* modeTitle(Mode m) {
-  if (m == Mode::VISIT) return "VISITE";
-  if (m == Mode::ROUND) return "PATIENTRONDE";
-  return "VERGADERING";
+  if (m == Mode::VISIT) return "Visite";
+  if (m == Mode::ROUND) return "Patientronde";
+  return "Vergadering";
 }
 
 uint32_t activeElapsedMs() {
@@ -352,128 +422,301 @@ uint32_t activeElapsedMs() {
   return millis() - sessionStartedMs - paused;
 }
 
+static uint32_t recordingDisplayElapsedMs() {
+  const uint32_t total = activeElapsedMs();
+  if (selectedMode == Mode::MEETING) return total;
+  return total >= patientSegmentStartOffsetMs
+      ? total - patientSegmentStartOffsetMs : 0;
+}
+
+static void formatCompactElapsed(uint32_t ms, char* out, size_t len) {
+  const uint32_t sec = ms / 1000;
+  if (sec >= 3600) {
+    snprintf(out, len, "%lu:%02lu:%02lu",
+             (unsigned long)(sec / 3600),
+             (unsigned long)((sec % 3600) / 60),
+             (unsigned long)(sec % 60));
+  } else {
+    snprintf(out, len, "%02lu:%02lu",
+             (unsigned long)(sec / 60),
+             (unsigned long)(sec % 60));
+  }
+}
+
 void formatElapsed(char* out, size_t len) {
-  uint32_t sec = activeElapsedMs() / 1000;
-  snprintf(out, len, "%02lu:%02lu:%02lu",
-           (unsigned long)(sec / 3600),
-           (unsigned long)((sec % 3600) / 60),
-           (unsigned long)(sec % 60));
+  formatCompactElapsed(activeElapsedMs(), out, len);
 }
 
 void drawHome() {
-  drawHeader("GEREED", "bediening met PWR");
-  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
-  centeredText(86, "PWR", C_BLUE, 3);
-  centeredText(122, "start opname", C_NAVY, 2);
-  centeredText(168, "PWR PWR", C_TEAL, 2);
-  centeredText(196, "menu", C_GREY, 1);
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  centeredText(74, "Klaar voor", C_NAVY, 3);
+  centeredText(104, "opname", C_NAVY, 3);
+  centeredText(134, "Standaard: Visite", C_GREY, 1);
+
+  char pending[48];
+  const uint32_t n = pendingCountUi();
+  if (n == 0) {
+    snprintf(pending, sizeof(pending), "Geen opnames te verzenden");
+  } else if (n == 1) {
+    snprintf(pending, sizeof(pending), "1 opname te verzenden");
+  } else {
+    snprintf(pending, sizeof(pending), "%lu opnames te verzenden",
+             (unsigned long)n);
+  }
+  centeredText(160, pending, n ? C_VIOLET : C_GREY, 1);
+  drawPwrHints("1x PWR  -  Start", "2x PWR  -  Menu");
 }
 
 void drawModeConfirm() {
-  drawHeader(modeTitle(selectedMode), "PWR = START");
-  zone(TWO_TOP, "START", C_GREEN, C_WHITE);
-  zone(TWO_BOTTOM, "TERUG", C_NAVY, C_WHITE);
+  drawHeader(modeTitle(selectedMode));
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(88, "Klaar om op te nemen", C_NAVY, 2);
+  drawTouchButton(TWO_TOP, "Start", nullptr, true);
+  drawTouchButton(TWO_BOTTOM, "Terug");
 }
 
 void drawRecording() {
   char elapsed[16];
-  formatElapsed(elapsed, sizeof(elapsed));
+  formatCompactElapsed(recordingDisplayElapsedMs(), elapsed, sizeof(elapsed));
+
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  // Recording state is always the most prominent fact.
+  M5.Display.fillCircle(23, 57, 6, C_RED);
+  M5.Display.setTextDatum(middle_left);
+  M5.Display.setTextColor(C_RED);
+  M5.Display.setTextSize(2);
+  M5.Display.drawString("Neemt op", 38, 57);
 
   if (quickModeChoiceActive) {
     const uint32_t used = millis() - quickModeChoiceStartedMs;
-    const uint32_t remaining =
-        used >= QUICK_MODE_CHOICE_MS ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
-    char sub[40];
-    snprintf(sub, sizeof(sub), "opname loopt - nog %lus", (unsigned long)remaining);
-    drawHeader("KIES TYPE", sub);
-    zone(TWO_TOP, "VISITE", C_BLUE, C_WHITE, "patient / patientronde");
-    zone(TWO_BOTTOM, "VERGADERING", C_TEAL, C_WHITE, "dubbel PWR = marker");
+    const uint32_t remaining = used >= QUICK_MODE_CHOICE_MS
+        ? 0 : (QUICK_MODE_CHOICE_MS - used + 999) / 1000;
+
+    Rect visitChoice{4, 74, 312, 52};
+    Rect meetingChoice{4, 128, 312, 52};
+    drawTouchButton(
+        visitChoice, "Visite", "standaard", false, true);
+    drawTouchButton(
+        meetingChoice, "Vergadering", nullptr, false, false);
+
+    char line[56];
+    snprintf(line, sizeof(line), "Zonder keuze: Visite - %lus",
+             (unsigned long)remaining);
+    centeredText(178, line, C_GREY, 1);
+    drawPwrHints("1x PWR  -  Stop");
     lastUiSecond = activeElapsedMs() / 1000;
     return;
   }
 
-  char title[40];
-  if (selectedMode != Mode::MEETING && patientNumber > 1) {
-    snprintf(title, sizeof(title), "VISITE - PATIENT %u", patientNumber);
+  char context[56];
+  if (selectedMode == Mode::MEETING) {
+    snprintf(context, sizeof(context), "Vergadering");
   } else {
-    snprintf(title, sizeof(title), "%s",
-             selectedMode == Mode::MEETING ? "VERGADERING" : "VISITE");
+    snprintf(context, sizeof(context), "Visite - Patient %u", patientNumber);
+  }
+  centeredText(84, context, C_NAVY, 2);
+
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(C_NAVY);
+  M5.Display.setTextSize(4);
+  M5.Display.drawString(elapsed, SCREEN_W / 2, 124);
+
+  if (recordingToast[0] &&
+      static_cast<int32_t>(recordingToastUntilMs - millis()) > 0) {
+    centeredText(158, recordingToast, C_VIOLET, 1);
+  } else if (selectedMode == Mode::MEETING && markerCount > 0) {
+    char marks[40];
+    snprintf(marks, sizeof(marks), "%u markering%s",
+             markerCount, markerCount == 1 ? "" : "en");
+    centeredText(158, marks, C_GREY, 1);
+  } else {
+    centeredText(158, "Touch uit", C_GREY, 1);
   }
 
-  drawHeader(title, elapsed);
-  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
-  centeredText(91, "OPNAME LOOPT", C_RED, 2);
-  centeredText(133, "PWR = STOP", C_NAVY, 2);
-  centeredText(174,
-               selectedMode == Mode::MEETING ? "PWR PWR = MARKER"
-                                             : "PWR PWR = VOLGENDE PATIENT",
-               C_BLUE, 1);
-  centeredText(207, "touch uitgeschakeld", C_GREY, 1);
+  drawPwrHints(
+      "1x PWR  -  Stop",
+      selectedMode == Mode::MEETING
+          ? "2x PWR  -  Markeer"
+          : "2x PWR  -  Volgende patient");
   lastUiSecond = activeElapsedMs() / 1000;
 }
 
 void drawPaused() {
-  char elapsed[16];
-  formatElapsed(elapsed, sizeof(elapsed));
-  drawHeader("PRIVACY PAUZE", elapsed);
-  zone(THREE_TOP, "HERVAT", C_GREEN, C_WHITE, "microfoons weer aan");
-  zone(THREE_MIDDLE, selectedMode == Mode::ROUND ? "VOLGENDE" : "MARKER", C_BLUE, C_WHITE);
-  zone(THREE_BOTTOM, "STOP", C_RED, C_WHITE);
+  drawHeader("Pauze");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(92, "Opname gepauzeerd", C_AMBER, 2);
+  centeredText(130, "Deze functie hoort niet bij de", C_GREY, 1);
+  centeredText(148, "normale Brian-workflow.", C_GREY, 1);
+  drawPwrHints("1x PWR  -  Stop");
+}
+
+static void drawSaving() {
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(98, "Opname bewaren...", C_NAVY, 2);
+  centeredText(132, "Een ogenblik", C_GREY, 1);
+  centeredText(166, "PWR tijdelijk uitgeschakeld", C_GREY, 1);
 }
 
 void drawFinished() {
-  drawHeader("OPNAME OPGESLAGEN");
-  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
-  centeredText(102, "KLAAR", C_GREEN, 3);
-  centeredText(154, "PWR = nieuwe opname", C_NAVY, 1);
-  centeredText(184, "PWR PWR = menu", C_GREY, 1);
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  if (lastSessionFalseStart) {
+    centeredText(86, "Valse start", C_AMBER, 3);
+    centeredText(124, "Opname verwijderd", C_GREY, 1);
+    centeredText(150, "korter dan 10 seconden", C_GREY, 1);
+  } else {
+    M5.Display.drawCircle(58, 87, 13, C_GREEN);
+    M5.Display.drawLine(51, 87, 56, 92, C_GREEN);
+    M5.Display.drawLine(56, 92, 66, 80, C_GREEN);
+    centeredText(86, "Opgeslagen", C_GREEN, 3);
+    centeredText(122, "Op dit apparaat", C_GREY, 1);
+
+    char context[56];
+    if (selectedMode == Mode::MEETING) {
+      snprintf(context, sizeof(context), "Vergadering");
+    } else if (patientNumber <= 1) {
+      snprintf(context, sizeof(context), "Visite - 1 patient");
+    } else {
+      snprintf(context, sizeof(context), "Visite - %u patienten", patientNumber);
+    }
+    centeredText(148, context, C_NAVY, 1);
+  }
+
+  drawPwrHints("1x PWR  -  Nieuwe opname", "2x PWR  -  Menu");
 }
 
 void drawMenu() {
-  drawHeader("MENU");
-  zone(THREE_TOP, "STATUS", C_BLUE, C_WHITE);
-  zone(THREE_MIDDLE, "SYNC", C_TEAL, C_WHITE, "Wi-Fi alleen op verzoek");
-  zone(THREE_BOTTOM, "TERUG", C_NAVY, C_WHITE);
+  drawHeader("Menu");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  char syncSubtitle[48];
+  const uint32_t pending = pendingCountUi();
+  if (pending == 0) snprintf(syncSubtitle, sizeof(syncSubtitle), "Alles verzonden");
+  else if (pending == 1) snprintf(syncSubtitle, sizeof(syncSubtitle), "1 opname wacht");
+  else snprintf(syncSubtitle, sizeof(syncSubtitle), "%lu opnames wachten",
+                (unsigned long)pending);
+
+  drawTouchButton(THREE_TOP, "Verzenden", syncSubtitle, pending > 0);
+  drawTouchButton(THREE_MIDDLE, "Apparaatstatus");
+  drawTouchButton(THREE_BOTTOM, "Terug");
 }
 
 void drawStatus() {
-  drawHeader("STATUS");
-  M5.Display.fillRect(0, HEADER_H, SCREEN_W, 150, C_BG);
+  drawHeader("Apparaatstatus");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
   char line[64];
-  snprintf(line, sizeof(line), "ACCU  %s%d%%", batteryCharging ? "laden  " : "", batteryPct);
-  centeredText(62, line, batteryPct <= 15 ? C_RED : C_NAVY, 2);
-  centeredText(91, sdOk ? "MICROSD  OK" : "MICROSD  FOUT", sdOk ? C_GREEN : C_RED, 2);
-  centeredText(120, touchOk ? "TOUCH  FT6336 OK" : "TOUCH  FOUT", touchOk ? C_GREEN : C_RED, 1);
+  snprintf(line, sizeof(line), "Batterij                 %s%d%%",
+           batteryCharging ? "+" : "", batteryPct);
+  M5.Display.setTextDatum(middle_left);
+  M5.Display.setTextColor(
+      (batteryPct >= 0 && batteryPct <= 15) ? C_AMBER : C_NAVY);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString(line, 24, 67);
+
+  M5.Display.setTextColor(sdOk ? C_NAVY : C_RED);
+  M5.Display.drawString(
+      sdOk ? "Opslag                    Beschikbaar"
+           : "Opslag                    Fout",
+      24, 92);
+
+  const uint32_t pending = pendingCountUi();
+  snprintf(line, sizeof(line), "Te verzenden              %lu",
+           (unsigned long)pending);
+  M5.Display.setTextColor(C_NAVY);
+  M5.Display.drawString(line, 24, 117);
+
+  const bool wifi = WiFi.status() == WL_CONNECTED;
+  M5.Display.setTextColor(C_NAVY);
+  M5.Display.drawString(
+      wifi ? "Wifi                      Verbonden"
+           : "Wifi                      Niet verbonden",
+      24, 142);
+
+  drawTouchButton(STATUS_DETAILS, "Details");
+  drawTouchButton(STATUS_BACK, "Terug");
+}
+
+static void drawDetails() {
+  drawHeader("Details");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  char line[80];
+  centeredText(59, sdOk ? "microSD: OK" : "microSD: FOUT",
+               sdOk ? C_NAVY : C_RED, 1);
+  centeredText(79, touchOk ? "Touch: FT6336 OK" : "Touch: FOUT",
+               touchOk ? C_GREY : C_RED, 1);
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  snprintf(line, sizeof(line), "AUDIO  %s",
-           audioError ? "FOUT" : "16k mono Opus direct");
+  centeredText(99, audioError ? "Audio: FOUT" : "Audio: 16k mono Opus",
+               audioError ? C_RED : C_GREY, 1);
 #else
-  snprintf(line, sizeof(line), "AUDIO  %s",
-           audioError ? "FOUT" : "48k stereo gereed");
+  centeredText(99, audioError ? "Audio: FOUT" : "Audio: 48k stereo WAV",
+               audioError ? C_RED : C_GREY, 1);
 #endif
-  centeredText(145, line, audioError ? C_RED : C_NAVY, 1);
-  snprintf(line, sizeof(line), "BOARD ID  %d", (int)M5.getBoard());
-  centeredText(168, line, C_GREY, 1);
-  zone(STATUS_BACK, "TERUG", C_NAVY, C_WHITE);
+  snprintf(line, sizeof(line), "Board ID: %d", (int)M5.getBoard());
+  centeredText(119, line, C_GREY, 1);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    snprintf(line, sizeof(line), "SSID: %s", WiFi.SSID().c_str());
+    centeredText(139, line, C_GREY, 1);
+    snprintf(line, sizeof(line), "IP: %s", WiFi.localIP().toString().c_str());
+    centeredText(159, line, C_GREY, 1);
+  } else {
+    centeredText(149, "Wifi: niet verbonden", C_GREY, 1);
+  }
+
+  drawTouchButton(STATUS_BACK, "Terug");
 }
 
 void drawSync() {
-  const char* title = "SYNC";
-  if (syncPhase == SyncPhase::NO_CREDENTIALS) title = "WIFI NIET INGESTELD";
-  else if (syncPhase == SyncPhase::CONNECTING_1 || syncPhase == SyncPhase::CONNECTING_2) title = "VERBINDEN...";
-  else if (syncPhase == SyncPhase::CONNECTED) title = "NETWERK OK";
-  else if (syncPhase == SyncPhase::FAILED) title = "GEEN VERBINDING";
-  drawHeader(title);
-  M5.Display.fillRect(0, HEADER_H, SCREEN_W, 100, C_BG);
-  if (syncPhase == SyncPhase::CONNECTED) {
-    centeredText(80, WiFi.SSID().c_str(), C_NAVY, 1);
-    centeredText(110, WiFi.localIP().toString().c_str(), C_BLUE, 2);
+  drawHeader("Verzenden");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  if (syncPhase == SyncPhase::NO_CREDENTIALS) {
+    centeredText(88, "Geen wifi ingesteld", C_AMBER, 2);
+    centeredText(120, "Opnames blijven op dit apparaat", C_GREY, 1);
+  } else if (syncPhase == SyncPhase::CONNECTING_1 ||
+             syncPhase == SyncPhase::CONNECTING_2) {
+    centeredText(88, "Wifi verbinden...", C_NAVY, 2);
+    centeredText(120, "Even geduld", C_GREY, 1);
+  } else if (syncPhase == SyncPhase::CONNECTED) {
+    centeredText(88, "Opnames voorbereiden...", C_NAVY, 2);
+    centeredText(120, "Wifi verbonden", C_GREY, 1);
+  } else if (syncPhase == SyncPhase::FAILED) {
+    centeredText(82, "Geen verbinding", C_AMBER, 2);
+    centeredText(112, "Opnames blijven op dit apparaat", C_GREY, 1);
+    drawTouchButton(SYNC_RETRY, "Opnieuw", nullptr, true);
+    drawTouchButton(SYNC_BACK, "Later");
+    return;
   } else {
-    centeredText(92, "Alleen netwerkverbinding", C_GREY, 1);
-    centeredText(116, "server-upload volgt later", C_GREY, 1);
+    centeredText(95, "Klaar om te verzenden", C_NAVY, 2);
   }
-  zone(SYNC_RETRY, "OPNIEUW", C_TEAL, C_WHITE);
-  zone(SYNC_BACK, "TERUG", C_NAVY, C_WHITE);
+
+  if (syncPhase != SyncPhase::CONNECTED) {
+    drawTouchButton(SYNC_BACK, "Later");
+  }
+}
+
+static void drawError() {
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(80,
+               uiErrorTitle.length() ? uiErrorTitle.c_str() : "Er ging iets mis",
+               C_RED, 2);
+  if (uiErrorDetail.length()) {
+    String d = uiErrorDetail;
+    if (d.length() > 48) d = d.substring(0, 48);
+    centeredText(118, d.c_str(), C_GREY, 1);
+  }
+  centeredText(150, "Controleer Apparaatstatus", C_GREY, 1);
+  drawTouchButton(STATUS_DETAILS, "Apparaatstatus");
+  drawTouchButton(STATUS_BACK, "Terug");
 }
 
 void render(bool force = false) {
@@ -481,19 +724,27 @@ void render(bool force = false) {
   if (!force && displayPower == DisplayPower::OFF) return;
 
   if (!force && !screenDirty) {
-    if ((state == AppState::RECORDING || state == AppState::PAUSED) && activeElapsedMs() / 1000 != lastUiSecond) screenDirty = true;
-    else return;
+    if ((state == AppState::RECORDING || state == AppState::PAUSED) &&
+        activeElapsedMs() / 1000 != lastUiSecond) {
+      screenDirty = true;
+    } else {
+      return;
+    }
   }
+
   screenDirty = false;
   switch (state) {
     case AppState::HOME: drawHome(); break;
     case AppState::MODE_CONFIRM: drawModeConfirm(); break;
     case AppState::RECORDING: drawRecording(); break;
     case AppState::PAUSED: drawPaused(); break;
+    case AppState::SAVING: drawSaving(); break;
     case AppState::FINISHED: drawFinished(); break;
     case AppState::MENU: drawMenu(); break;
     case AppState::STATUS: drawStatus(); break;
+    case AppState::DETAILS: drawDetails(); break;
     case AppState::SYNC: drawSync(); break;
+    case AppState::ERROR: drawError(); break;
   }
 }
 
