@@ -853,7 +853,13 @@ uint16_t findNextSessionId() {
   for (uint16_t i = 1; i < 65000; ++i) {
     char p[64];
     snprintf(p, sizeof(p), "/visitescribe/s%05u_events.csv", i);
-    if (!SD.exists(p)) return i;
+    if (!SD.exists(p)) {
+      // A reset during retention may leave its final sync receipt behind.
+      // Reserve that prefix until cleanup has removed all of its files.
+      char receipt[64];
+      snprintf(receipt, sizeof(receipt), "/visitescribe/s%05u_sync.txt", i);
+      if (!SD.exists(receipt)) return i;
+    }
   }
   return 1;
 }

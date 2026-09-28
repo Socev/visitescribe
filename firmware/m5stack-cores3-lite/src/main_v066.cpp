@@ -13,7 +13,7 @@
 // - after create/retry, GET /status is used to upload only missing chunks;
 // - a pre-v0.6.6 server session is detected by its expected legacy chunk count
 //   and resumed using the original 48 kHz stereo / 10-second wire format;
-// - local WAV files are never deleted by sync.
+// - confirmed local sessions are retained for at least 72 hours before cleanup.
 
 #define VISITESCRIBE_V05_SETUP_NAME setup_v05
 #define VISITESCRIBE_V05_LOOP_NAME loop_v05
@@ -34,6 +34,8 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/rsa.h>
 #include <mbedtls/sha256.h>
+#include "sync_retention_clock.h"
+#include "sync_retention_policy.h"
 
 #if __has_include("server_secrets.h")
 #include "server_secrets.h"
@@ -97,7 +99,7 @@ struct VsRemoteStatus {
 };
 
 enum class VsServerStage : uint8_t {
-  IDLE, FETCH_KEY, PREPARE, CREATE_SESSION, UPLOAD_CHUNKS,
+  IDLE, CLEANUP, FETCH_KEY, PREPARE, CREATE_SESSION, UPLOAD_CHUNKS,
   EVENTS, COMPLETE, CONFIRM, DONE, NOTHING, ERROR,
 };
 
@@ -150,6 +152,7 @@ static size_t vsCipherCapacity = 0;
 static const char* vsStageName(VsServerStage stage) {
   switch (stage) {
     case VsServerStage::IDLE: return "Wifi verbinden...";
+    case VsServerStage::CLEANUP: return "Opnames opruimen...";
     case VsServerStage::FETCH_KEY: return "Verbinding beveiligen...";
     case VsServerStage::PREPARE: return "Opnames voorbereiden...";
     case VsServerStage::CREATE_SESSION: return "Opname aanmelden...";
@@ -187,7 +190,7 @@ static void vsDrawServerSync(bool force = false) {
   if (vsServerStage == VsServerStage::UPLOAD_CHUNKS &&
       vsServerChunkTotal > 0) {
     const uint32_t currentSession =
-        std::min(vsServerSessionsDone + 1, vsServerSessionsTotal);
+        vsSyncCurrentOrdinal(handled, vsServerSessionsTotal);
     char line[56];
     if (vsServerSessionsTotal > 0) {
       snprintf(line, sizeof(line), "Opname %lu van %lu",
@@ -213,8 +216,8 @@ static void vsDrawServerSync(bool force = false) {
     }
   } else if (vsServerSessionsTotal > 0 && !done && !error) {
     char line[56];
-    snprintf(line, sizeof(line), "%lu van %lu afgerond",
-             (unsigned long)handled,
+    snprintf(line, sizeof(line), "Opname %lu van %lu",
+             (unsigned long)vsSyncCurrentOrdinal(handled, vsServerSessionsTotal),
              (unsigned long)vsServerSessionsTotal);
     centeredText(104, line, C_GREY, 1);
   }
@@ -370,15 +373,21 @@ static bool vsReadSyncMeta(const String& prefix, String& uuid, String& syncState
   return uuid.length() == 36;
 }
 
+static void vsRetentionRecordConfirmation(const String& prefix, const String& uuid);
+
 static bool vsWriteSyncMeta(const String& prefix, const String& uuid, const char* syncState) {
   String path = vsSyncPath(prefix);
   if (SD.exists(path)) SD.remove(path);
   File f = SD.open(path, FILE_WRITE);
   if (!f) return false;
-  f.printf("uuid=%s\nstate=%s\n", uuid.c_str(), syncState);
+  const String body = String("uuid=") + uuid + "\nstate=" + syncState + "\n";
+  const bool ok = f.print(body) == body.length();
   f.flush();
   f.close();
-  return true;
+  if (ok && strcmp(syncState, "ingested") == 0) {
+    vsRetentionRecordConfirmation(prefix, uuid);
+  }
+  return ok;
 }
 
 static bool vsEnsureSessionUuid(const String& prefix, String& uuid, String& syncState) {
@@ -392,6 +401,8 @@ static bool vsLocalSyncStateTerminal(const String& stateName) {
   return stateName == "ingested" ||
          stateName == "quarantined_no_audio";
 }
+
+#include "sync_retention.h"
 
 static String vsBaseName(const char* name) {
   String s(name ? name : "");

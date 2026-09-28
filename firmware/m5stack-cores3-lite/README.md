@@ -388,3 +388,38 @@ A subsequent hardware run exceeded 100 seconds: chunks 1, 2 and 3 each closed
 with 1500 frames, 30000 ms and ok=1, and chunk 4 opened. No frames were dropped
 and no audio error, panic or reboot appeared during those rollovers. The observed
 queue high-water mark was 45/512 frames across the first three rotations.
+
+
+## Confirmed-sync retention and progress
+
+Confirmed (`ingested`) sessions are eligible for removal after 72 full hours.
+A separate `_synced_at.txt` records the first confirmation time and matching
+session UUID. Repeated confirmations do not move that deadline. All files with
+the exact session prefix are removed, including audio, temporary recovery copies,
+events, metadata and diagnostics. The sync receipt is deleted last. Interrupted
+cleanup retains that receipt, and allocation reserves its session number until
+cleanup finishes. Queued, failed and quarantined recordings are never eligible.
+
+Deletion requires an SNTP-synchronized clock in the current boot; the build-date
+TLS clock seed cannot authorize deletion. Older confirmed sessions without a
+recorded time, corrupt timestamps, and USB confirmations without network time
+receive a new full 72-hour grace period at the next valid-clock check. This avoids
+inventing an old confirmation date. Clock rollback defers deletion.
+
+Cleanup runs before Wi-Fi sync and hourly while HOME is idle. It never runs during
+recording, a live encoder worker or USB transfer. A powered-off/offline device may
+therefore retain files longer than 72 hours; after reboot it needs network time.
+
+Throughout preparation, upload, event submission and server confirmation, the
+progress line consistently says `Opname N van M`. N advances only after a session
+is confirmed (or explicitly skipped). It no longer alternates between the current
+session number and the smaller count of already completed sessions.
+
+The in-memory filesystem regression test is `tests/retention_host.cpp`. It uses
+the actual retention header and covers the 72-hour boundary, missing/invalid time,
+UUID mismatch, non-ingested states, busy guards, short writes, failed deletion,
+and reset after each of five deletion steps. It never accesses real SD files.
+Run with a C++17 host compiler, for example from a Visual Studio developer prompt:
+`cl /EHsc /std:c++17 tests\retention_host.cpp /Fe:retention_host.exe`, then
+`retention_host.exe`. Firmware builds also compile retention/progress boundary
+assertions. Hardware deletion and the updated display still require validation.

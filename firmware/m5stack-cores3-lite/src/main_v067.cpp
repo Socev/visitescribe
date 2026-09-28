@@ -1220,6 +1220,9 @@ static bool vs067SyncAllPending() {
   if (!sdOk) return vsFail("microSD niet beschikbaar");
   if (!vsEnsureDeviceRootKey()) return vsFail("Device root key niet beschikbaar");
 
+  vsServerSessionsTotal = vsServerSessionsDone = vsServerSessionsSkipped = 0;
+  vsSetStage(VsServerStage::CLEANUP);
+  vsRetentionCleanup();
 #ifdef VISITESCRIBE_DIRECT_OPUS
   vsDoRecoverActiveSessions();
 #endif
@@ -1359,6 +1362,13 @@ void loop() {
   // v0.6.7 sync engine here.
   loop_v05();
   vs067ServiceServerSync();
+  // Never walk/delete SD files while recording, USB transfer or sync owns it.
+  static uint32_t lastRetentionCheck = 0;
+  if (state == AppState::HOME && !vsServerSyncRunning &&
+      millis() - lastRetentionCheck >= 3600000UL) {
+    lastRetentionCheck = millis();
+    vsRetentionCleanup();
+  }
 
   // Server-sync screens are redrawn explicitly on real state/progress changes.
   // Do not repaint the complete screen continuously here; that caused visible

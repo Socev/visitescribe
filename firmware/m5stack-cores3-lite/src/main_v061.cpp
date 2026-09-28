@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <sys/time.h>
 #include <time.h>
+#include "sync_retention_clock.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,6 +66,7 @@ void initVariant() {
   // Starting SNTP before Wi-Fi is fine: it will obtain time once networking
   // becomes available. Three independent servers keep this usable on normal
   // home, practice and hotspot networks.
+  sntp_set_time_sync_notification_cb(vsRetentionTimeReceived);
   configTime(0, 0,
              "time.cloudflare.com",
              "pool.ntp.org",
