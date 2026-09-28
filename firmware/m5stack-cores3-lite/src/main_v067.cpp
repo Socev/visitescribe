@@ -1318,6 +1318,9 @@ static void vs067ServiceServerSync() {
   WiFi.setSleep(true);
   Serial.println("SERVER: v0.6.7 sync ended; WiFi power-save ON");
   vsServerSyncRunning = false;
+  // The final DONE/ERROR frame may have been drawn while the busy lock was
+  // still true. Redraw once unlocked so the user sees the real result actions.
+  vsDrawServerSync(true);
 }
 
 void setup() {
