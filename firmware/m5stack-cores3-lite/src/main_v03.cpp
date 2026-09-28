@@ -369,7 +369,7 @@ static void serviceInputsV03() {
     if (quickModeChoiceActive) {
       if (patientCommit) selectQuickMode(Mode::VISIT);
       else if (meetingCommit) selectQuickMode(Mode::MEETING);
-      else if (stopCommit) selectQuickStop();
+      else if (stopCommit) touchQuickStop();
     }
   }
 
