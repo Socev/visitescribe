@@ -165,6 +165,8 @@ static uint32_t vsDoChunkSequence = 0;
 static int32_t vsDoDownsampleSum = 0;
 static uint8_t vsDoDownsampleFrames = 0;
 static uint16_t vsDoPcmFill = 0;
+// Producer-owned latch: stopCapture() may drain more buffers after an error.
+static bool vsDoProducerFailed = false;
 static int16_t vsDoPcmFrame[VS_DO_FRAME_SAMPLES];
 
 // Worker-owned Ogg/encoder state.
@@ -699,6 +701,7 @@ static bool vsDirectOpusBeginSegment() {
   vsDoDownsampleSum = 0;
   vsDoDownsampleFrames = 0;
   vsDoPcmFill = 0;
+  vsDoProducerFailed = false;
   vsDoWorkerReady = false;
   vsDoWorkerDone = false;
   vsDoWorkerFailed = false;
@@ -732,12 +735,16 @@ static bool vsDirectOpusReady() {
 }
 
 static bool vsDoQueuePcmFrame() {
-  if (!vsDoQueue || !vsDoWorkerReady) return false;
+  if (!vsDoQueue || !vsDoWorkerReady || vsDoWorkerFailed || vsDoWorkerDone) {
+    return false;
+  }
 
   VsDoQueueItem item;
   item.kind = 0;
   memcpy(item.pcm, vsDoPcmFrame, sizeof(item.pcm));
-  if (xQueueSend(vsDoQueue, &item, 0) != pdTRUE) {
+  // Allow one frame period for the worker to drain a full queue at rollover.
+  // Never block indefinitely if the encoder or SD has failed.
+  if (xQueueSend(vsDoQueue, &item, pdMS_TO_TICKS(VS_DO_FRAME_MS)) != pdTRUE) {
     ++vsDoDroppedFrames;
     return false;
   }
@@ -745,7 +752,13 @@ static bool vsDoQueuePcmFrame() {
 }
 
 static bool vsDirectOpusConsumeStereo(const int16_t* samples, size_t count) {
+  if (vsDoProducerFailed) return false;
   if (!samples || count < 2) return true;
+  if (vsDoPcmFill >= VS_DO_FRAME_SAMPLES) {
+    vsDoPcmFill = 0;
+    vsDoProducerFailed = true;
+    return false;
+  }
 
   const size_t frames = count / 2;
   for (size_t i = 0; i < frames; ++i) {
@@ -763,8 +776,13 @@ static bool vsDirectOpusConsumeStereo(const int16_t* samples, size_t count) {
       vsDoDownsampleFrames = 0;
 
       if (vsDoPcmFill == VS_DO_FRAME_SAMPLES) {
-        if (!vsDoQueuePcmFrame()) return false;
+        // Reset before any failure return: a subsequent microphone callback
+        // must never write sample 320 beyond vsDoPcmFrame.
         vsDoPcmFill = 0;
+        if (!vsDoQueuePcmFrame()) {
+          vsDoProducerFailed = true;
+          return false;
+        }
       }
     }
   }
