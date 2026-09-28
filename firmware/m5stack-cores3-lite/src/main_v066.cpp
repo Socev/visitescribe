@@ -119,12 +119,24 @@ static bool vsServerTouchLocked() {
   return vsServerSyncRunning;
 }
 
-struct VsServerTouchLockInstaller {
-  VsServerTouchLockInstaller() {
+static bool vsServerRetryAllowed() {
+  return syncPhase == SyncPhase::FAILED ||
+         vsServerStage == VsServerStage::ERROR;
+}
+
+static bool vsServerResultDone() {
+  return vsServerStage == VsServerStage::DONE ||
+         vsServerStage == VsServerStage::NOTHING;
+}
+
+struct VsServerUiHookInstaller {
+  VsServerUiHookInstaller() {
     vsSyncTouchLockedHook = &vsServerTouchLocked;
+    vsSyncRetryAllowedHook = &vsServerRetryAllowed;
+    vsSyncDoneHook = &vsServerResultDone;
   }
 };
-static VsServerTouchLockInstaller vsServerTouchLockInstaller;
+static VsServerUiHookInstaller vsServerUiHookInstaller;
 
 static uint8_t vsDeviceRootKey[32] = {0};
 static bool vsDeviceRootKeyReady = false;
@@ -137,63 +149,117 @@ static size_t vsCipherCapacity = 0;
 
 static const char* vsStageName(VsServerStage stage) {
   switch (stage) {
-    case VsServerStage::IDLE: return "WACHT OP WIFI";
-    case VsServerStage::FETCH_KEY: return "SERVER SLEUTEL";
-    case VsServerStage::PREPARE: return "VOORBEREIDEN";
-    case VsServerStage::CREATE_SESSION: return "SESSIE AANMAKEN";
-    case VsServerStage::UPLOAD_CHUNKS: return "AUDIO UPLOAD";
-    case VsServerStage::EVENTS: return "EVENTS UPLOAD";
-    case VsServerStage::COMPLETE: return "AFRONDEN";
-    case VsServerStage::CONFIRM: return "CONTROLEREN";
-    case VsServerStage::DONE: return "SYNC KLAAR";
-    case VsServerStage::NOTHING: return "NIETS TE SYNCEN";
-    case VsServerStage::ERROR: return "SYNC FOUT";
+    case VsServerStage::IDLE: return "Wifi verbinden...";
+    case VsServerStage::FETCH_KEY: return "Verbinding beveiligen...";
+    case VsServerStage::PREPARE: return "Opnames voorbereiden...";
+    case VsServerStage::CREATE_SESSION: return "Opname aanmelden...";
+    case VsServerStage::UPLOAD_CHUNKS: return "Opname verzenden...";
+    case VsServerStage::EVENTS: return "Gegevens afronden...";
+    case VsServerStage::COMPLETE: return "Upload afronden...";
+    case VsServerStage::CONFIRM: return "Ontvangst controleren...";
+    case VsServerStage::DONE: return "Alles verzonden";
+    case VsServerStage::NOTHING: return "Alles is al verzonden";
+    case VsServerStage::ERROR: return "Verzenden onderbroken";
   }
-  return "SYNC";
+  return "Verzenden";
 }
 
 static void vsDrawServerSync(bool force = false) {
   if (state != AppState::SYNC) return;
   if (!force && millis() - vsServerLastDrawMs < 200) return;
   vsServerLastDrawMs = millis();
-  drawHeader("SERVER SYNC");
-  M5.Display.fillRect(0, HEADER_H, SCREEN_W, 150, C_BG);
-  centeredText(58, vsStageName(vsServerStage),
-               vsServerStage == VsServerStage::ERROR ? C_RED :
-               ((vsServerStage == VsServerStage::DONE || vsServerStage == VsServerStage::NOTHING) ? C_GREEN : C_NAVY), 2);
-  String wifiLine = String("WIFI  ") + (WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "-");
-  centeredText(83, wifiLine.c_str(), C_GREY, 1);
-  if (vsServerSessionPrefix.length()) {
-    String s = String("SESSIE  ") + vsServerSessionPrefix;
-    centeredText(105, s.c_str(), C_NAVY, 1);
+
+  drawHeader("Verzenden");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+
+  const bool error = vsServerStage == VsServerStage::ERROR;
+  const bool done =
+      vsServerStage == VsServerStage::DONE ||
+      vsServerStage == VsServerStage::NOTHING;
+
+  centeredText(70, vsStageName(vsServerStage),
+               error ? C_AMBER : (done ? C_GREEN : C_NAVY),
+               done ? 2 : 2);
+
+  const uint32_t handled =
+      vsServerSessionsDone + vsServerSessionsSkipped;
+
+  if (vsServerStage == VsServerStage::UPLOAD_CHUNKS &&
+      vsServerChunkTotal > 0) {
+    const uint32_t currentSession =
+        std::min(vsServerSessionsDone + 1, vsServerSessionsTotal);
+    char line[56];
+    if (vsServerSessionsTotal > 0) {
+      snprintf(line, sizeof(line), "Opname %lu van %lu",
+               (unsigned long)currentSession,
+               (unsigned long)vsServerSessionsTotal);
+      centeredText(99, line, C_NAVY, 1);
+    }
+
+    const uint32_t current =
+        vsServerChunkCurrent > vsServerChunkTotal
+            ? vsServerChunkTotal : vsServerChunkCurrent;
+    const int barX = 28;
+    const int barY = 118;
+    const int barW = 264;
+    const int barH = 12;
+    M5.Display.fillRoundRect(barX, barY, barW, barH, 6, C_SOFT);
+    const int fillW = vsServerChunkTotal
+        ? static_cast<int>(
+              (static_cast<uint64_t>(barW) * current) / vsServerChunkTotal)
+        : 0;
+    if (fillW > 0) {
+      M5.Display.fillRoundRect(barX, barY, fillW, barH, 6, C_VIOLET);
+    }
+  } else if (vsServerSessionsTotal > 0 && !done && !error) {
+    char line[56];
+    snprintf(line, sizeof(line), "%lu van %lu afgerond",
+             (unsigned long)handled,
+             (unsigned long)vsServerSessionsTotal);
+    centeredText(104, line, C_GREY, 1);
   }
-  if (vsServerStage == VsServerStage::UPLOAD_CHUNKS && vsServerChunkTotal) {
-    char p[48];
-    snprintf(p, sizeof(p), "CHUNK %lu / %lu", (unsigned long)vsServerChunkCurrent, (unsigned long)vsServerChunkTotal);
-    centeredText(128, p, C_BLUE, 2);
-  } else if (vsServerSessionsTotal) {
-    char p[48];
-    const uint32_t handled = vsServerSessionsDone + vsServerSessionsSkipped;
-    snprintf(p, sizeof(p), "SESSIES %lu / %lu", (unsigned long)handled, (unsigned long)vsServerSessionsTotal);
-    centeredText(128, p, C_BLUE, 1);
+
+  if (done) {
+    if (vsServerStage == VsServerStage::DONE) {
+      char line[64];
+      snprintf(line, sizeof(line), "%lu opname%s ontvangen",
+               (unsigned long)vsServerSessionsDone,
+               vsServerSessionsDone == 1 ? "" : "s");
+      centeredText(112, line, C_NAVY, 1);
+      centeredText(136, "Door de server bevestigd", C_GREY, 1);
+    } else {
+      centeredText(116, "Geen opnames te verzenden", C_GREY, 1);
+    }
+    drawTouchButton(SYNC_BACK, "Gereed", nullptr, true);
+    return;
   }
-  if (vsServerStage == VsServerStage::ERROR) {
+
+  if (error) {
     String e = vsServerError;
-    if (e.length() > 45) e = e.substring(0, 45);
-    centeredText(155, e.c_str(), C_RED, 1);
-    centeredText(174, "OPNIEUW = retry", C_GREY, 1);
-  } else {
-    String m = vsServerMessage;
-    if (m.length() > 45) m = m.substring(0, 45);
-    if (m.length()) centeredText(158, m.c_str(), C_GREY, 1);
+    if (e.length() > 46) e = e.substring(0, 46);
+    if (e.length()) centeredText(108, e.c_str(), C_GREY, 1);
+
+    const uint32_t remaining =
+        vsServerSessionsTotal > handled
+            ? vsServerSessionsTotal - handled : 0;
+    char line[64];
+    snprintf(line, sizeof(line), "%lu nog te verzenden",
+             (unsigned long)remaining);
+    centeredText(132, line, C_NAVY, 1);
+    centeredText(154, "Opnames blijven op dit apparaat", C_GREY, 1);
+    drawTouchButton(SYNC_RETRY, "Opnieuw", nullptr, true);
+    drawTouchButton(SYNC_BACK, "Later");
+    return;
   }
+
+  String message = vsServerMessage;
+  if (message.length() > 46) message = message.substring(0, 46);
+  if (message.length()) centeredText(151, message.c_str(), C_GREY, 1);
+
   if (vsServerSyncRunning) {
-    M5.Display.fillRect(0, 190, SCREEN_W, 50, C_NAVY);
-    centeredText(206, "SYNC LOOPT", C_WHITE, 2);
-    centeredText(227, "touch tijdelijk uit", C_WHITE, 1);
-  } else {
-    zone(SYNC_RETRY, "OPNIEUW", C_TEAL, C_WHITE);
-    zone(SYNC_BACK, "TERUG", C_NAVY, C_WHITE);
+    centeredText(174, "Opnames blijven op dit apparaat", C_GREY, 1);
+    M5.Display.drawFastHLine(16, 190, SCREEN_W - 32, C_LINE);
+    centeredText(214, "Bezig - touch uit", C_GREY, 1);
   }
 }
 
@@ -414,6 +480,17 @@ static std::vector<String> vsPendingPrefixes() {
       prefixes.end());
   return prefixes;
 }
+
+static uint32_t vsPendingCountForUi() {
+  return static_cast<uint32_t>(vsPendingPrefixes().size());
+}
+
+struct VsPendingCountHookInstaller {
+  VsPendingCountHookInstaller() {
+    vsPendingCountHook = &vsPendingCountForUi;
+  }
+};
+static VsPendingCountHookInstaller vsPendingCountHookInstaller;
 
 static bool vsLoadLocalSession(const String& prefix, VsLocalSession& out) {
   out = VsLocalSession();
