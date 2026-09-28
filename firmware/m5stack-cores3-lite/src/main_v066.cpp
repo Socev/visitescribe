@@ -233,6 +233,7 @@ static void vsDrawServerSync(bool force = false) {
     } else {
       centeredText(116, "Geen opnames te verzenden", C_GREY, 1);
     }
+    centeredText(163, "Hoofdmenu na 10 seconden", C_GREY, 1);
     drawTouchButton(SYNC_BACK, "Gereed", nullptr, true);
     return;
   }

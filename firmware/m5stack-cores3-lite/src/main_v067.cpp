@@ -15,6 +15,8 @@
 #undef loop
 
 #include <esp32-hal-psram.h>
+#include "sync_result_timer.h"
+#include "power_probe.h"
 
 static constexpr size_t VS067_SCRATCH_BYTES = 512U * 1024U;
 static uint8_t* vs067Scratch = nullptr;
@@ -641,6 +643,10 @@ static void vsUsbHandleCommand(String line) {
     return;
   }
 #endif
+  if (line == "VSUSB POWERPROBE") {
+    Serial.println(vsStartPowerProbe() ? "VSUSB OK POWERPROBE" : "VSUSB ERROR POWERPROBE");
+    return;
+  }
   if (line == "VSUSB INFO") {
     vsUsbReplyInfo();
     return;
@@ -1311,6 +1317,19 @@ static bool vs067SyncAllPending() {
 }
 
 static void vs067ServiceServerSync() {
+  static VsSyncResultTimer resultTimer;
+  if (resultTimer.update(state == AppState::SYNC && !vsServerSyncRunning &&
+                         vsServerResultDone(), millis())) {
+    wifiOff();
+    syncPhase = SyncPhase::NOT_STARTED;
+    vsServerStage = VsServerStage::IDLE;
+    vsServerSessionPrefix = "";
+    goHome();
+    pwrClickPendingV03 = false;
+    pwrFirstClickMsV03 = 0;
+    Serial.println("SERVER: successful result auto-home after 10s; WiFi off");
+    return;
+  }
   if (state != AppState::SYNC) {
     if (!vsServerSyncRunning) {
       vsServerStage = VsServerStage::IDLE;
@@ -1358,6 +1377,7 @@ void setup() {
 }
 
 void loop() {
+  vsServicePowerProbe();
   // The PC sync app gets exclusive use of USB Serial after an explicit ENTER
   // handshake. While active, do not run normal UI/Wi-Fi/server code so binary
   // file reads cannot be polluted by debug output.

@@ -453,3 +453,31 @@ and exercises the actual inventory header against 60 simulated sessions, includi
 Opus, legacy WAV, recovered, incomplete, corrupt and already ingested cases. It
 asserts one directory pass per inventory and fresh results after files/status
 change. Build/run with a C++17 host compiler as for the retention host test.
+
+
+## Successful sync returns HOME
+
+After a successful server-confirmed upload, or a result that everything was
+already synchronized, the result stays visible for ten seconds. The v0.6.7 loop
+then switches Wi-Fi off and returns HOME, where normal display dim/sleep resumes.
+Active transfers and error results never start this timer. An explicit departure
+from the result cancels its timer; the next sync gets a fresh ten seconds. Pending
+PWR clicks are consumed on automatic return to avoid starting a recording.
+`tests/sync_result_timer_host.cpp` covers the deadline, reset and millis wrap.
+
+USB maintenance diagnostic `VSUSB POWERPROBE` records up to 60 seconds of AXP2101
+status, VBUS voltage, battery voltage and charge direction to
+`/visitescribe/power_probe.csv`. It runs only when capture/session/server sync is
+idle and changes no charger settings. This is for validating Bottom3 dock
+visibility; the Bottom3 TP4057 charger is separate from the CoreS3 power chip.
+The command is not a dock detection implementation.
+
+
+Bottom3 hardware check (2026-09-28): with USB disconnected, placement on the
+powered magnetic base raised battery voltage from about 4.07 V to 4.12 V; removal
+lowered it again. The user confirmed the base charge LED lit. Throughout both
+states, AXP2101 registers 0x00/0x01 stayed 24/85, VBUS stayed zero and charge status
+stayed -1 (discharge). The base's TP4057 charges independently. No dock trigger
+is inferred from battery voltage; load changes can produce similar movement.
+Automatic magnetic-dock sync is not implemented without a reliable detector.
+Official schematic: https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/531/M5GO3.pdf
