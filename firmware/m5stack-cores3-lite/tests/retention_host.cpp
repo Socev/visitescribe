@@ -15,6 +15,7 @@ public:
   String substring(size_t a, size_t b = npos) const { return substr(a, b == npos ? npos : b-a); }
   bool startsWith(const String& s) const { return rfind(s, 0) == 0; }
   bool endsWith(const String& s) const { return size() >= s.size() && compare(size()-s.size(), s.size(), s)==0; }
+  int compareTo(const String& s) const { return compare(s); }
   int lastIndexOf(char c) const { auto i=rfind(c); return i==npos ? -1 : int(i); }
   void trim() { auto a=find_first_not_of(" \r\n\t"), b=find_last_not_of(" \r\n\t"); *this=a==npos ? "" : substr(a,b-a+1); }
 };
@@ -37,10 +38,10 @@ struct File {
 struct PowerLoss {};
 struct FakeSD {
   std::map<String,String> data;
-  String failRemove; int crashAfter=0, removed=0; size_t writeLimit=SIZE_MAX;
+  String failRemove; int directoryOpens=0; int crashAfter=0, removed=0; size_t writeLimit=SIZE_MAX;
   bool exists(const String& p) { return data.count(p)>0; }
   File open(const String& p, int mode=FILE_READ) {
-    if (p=="/visitescribe") { File f(p); f.directory=true; for(auto& e:data) if(e.first.startsWith("/visitescribe/")) f.entries.push_back(e.first); return f; }
+    if (p=="/visitescribe") { ++directoryOpens; File f(p); f.directory=true; for(auto& e:data) if(e.first.startsWith("/visitescribe/")) f.entries.push_back(e.first); return f; }
     if (mode==FILE_WRITE) data[p]="";
     return exists(p) ? File(p) : File();
   }
@@ -105,4 +106,5 @@ int main() {
   seed("ingested",false); SD.writeLimit=8; vsRetentionCleanup(); assert(audio()); assert(!vsRetentionReadStamp("s00001",uuid)); SD.writeLimit=SIZE_MAX; vsRetentionCleanup(); assert(audio());
   seed(); vsRetentionRecordConfirmation("s00001",uuid); assert(vsRetentionReadStamp("s00001",uuid)==T); // retries never extend retention
   puts("PASS: retention boundaries, states, migration, clock, UUID, busy guards, partial writes, delete failure and 5 reset points; progress static assertions.");
+  return 0;
 }

@@ -460,48 +460,7 @@ static String vsModeFromWavs(const std::vector<String>& wavs) {
   return visitPatientFiles > 1 ? "multi_patient" : "single_patient";
 }
 
-static std::vector<String> vsPendingPrefixes() {
-  std::vector<String> prefixes;
-  File dir = SD.open("/visitescribe");
-  if (!dir) return prefixes;
-
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    if (!f.isDirectory()) {
-      String base = vsBaseName(f.name());
-      if (base.startsWith("s") &&
-          base.endsWith("_events.csv") &&
-          base.length() >= 6) {
-        const String prefix = base.substring(0, 6);
-        const String eventsPath = String("/visitescribe/") + base;
-        String uuid, st;
-        const bool hasMeta = vsReadSyncMeta(prefix, uuid, st);
-
-        if ((!hasMeta || !vsLocalSyncStateTerminal(st)) &&
-            vsEventsShowComplete(eventsPath)) {
-          bool hasAudio = !vsCollectWavs(prefix).empty();
-#ifdef VISITESCRIBE_DIRECT_OPUS
-          if (!hasAudio) {
-            hasAudio = !vsDirectOpusChunksForPrefix(prefix).empty();
-          }
-#endif
-          if (hasAudio) prefixes.push_back(prefix);
-        }
-      }
-    }
-    f.close();
-  }
-  dir.close();
-
-  std::sort(
-      prefixes.begin(), prefixes.end(),
-      [](const String& a, const String& b) { return a.compareTo(b) < 0; });
-  prefixes.erase(
-      std::unique(
-          prefixes.begin(), prefixes.end(),
-          [](const String& a, const String& b) { return a == b; }),
-      prefixes.end());
-  return prefixes;
-}
+#include "sync_inventory.h"
 
 static uint32_t vsPendingCountForUi() {
   return static_cast<uint32_t>(vsPendingPrefixes().size());
@@ -514,7 +473,13 @@ struct VsPendingCountHookInstaller {
 };
 static VsPendingCountHookInstaller vsPendingCountHookInstaller;
 
-static bool vsLoadLocalSession(const String& prefix, VsLocalSession& out) {
+static bool vsLoadLocalSession(const String& prefix, VsLocalSession& out,
+                               const VsLocalSession* prepared = nullptr) {
+  if (prepared && prepared->prefix == prefix) {
+    out = *prepared;
+    String st;
+    return vsEnsureSessionUuid(prefix, out.uuid, st) && !vsLocalSyncStateTerminal(st);
+  }
   out = VsLocalSession();
   out.prefix = prefix;
   out.eventsPath = String("/visitescribe/") + prefix + "_events.csv";

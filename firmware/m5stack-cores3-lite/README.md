@@ -423,3 +423,26 @@ Run with a C++17 host compiler, for example from a Visual Studio developer promp
 `cl /EHsc /std:c++17 tests\retention_host.cpp /Fe:retention_host.exe`, then
 `retention_host.exe`. Firmware builds also compile retention/progress boundary
 assertions. Hardware deletion and the updated display still require validation.
+
+
+## Single-pass pending inventory
+
+`sync_inventory.h` walks the recording directory once and groups event files and
+legacy WAV paths by exact session prefix. Terminal sync states are excluded;
+remaining sessions still need a normal stop or recovery marker. Direct-Opus
+metadata is validated first. WAV fallback uses paths from the same inventory,
+without scanning the directory again for every session.
+
+Wi-Fi sync reuses the validated session/chunk metadata within that invocation.
+There is no persistent inventory cache: later recordings, recoveries, confirmed
+uploads and retention changes are reflected on the next invocation. The uploader
+still opens and checks the actual audio when preparing each upload. Recovery and
+retention have their own bounded directory scans; `directory_passes=1` refers to
+the pending inventory, not to all SD activity throughout SYNC.
+
+Serial reports `SERVER: inventory directory_passes=1 files=... pending=...
+elapsed=...ms`. Host test `tests/inventory_host.cpp` includes the retention tests
+and exercises the actual inventory header against 60 simulated sessions, including
+Opus, legacy WAV, recovered, incomplete, corrupt and already ingested cases. It
+asserts one directory pass per inventory and fresh results after files/status
+change. Build/run with a C++17 host compiler as for the retention host test.

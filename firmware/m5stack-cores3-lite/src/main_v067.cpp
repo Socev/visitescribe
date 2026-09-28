@@ -274,15 +274,17 @@ static void vsUsbReplyList() {
   Serial.println("VSUSB LISTING START");
   Serial.flush();
 
-  const auto prefixes = vsPendingPrefixes();
+  std::vector<VsLocalSession> preparedSessions;
+  const auto prefixes = vsPendingPrefixes(&preparedSessions);
 
   Serial.printf("VSUSB LISTING %u\n", (unsigned)prefixes.size());
   Serial.flush();
 
   uint32_t listed = 0;
+  size_t preparedIndex = 0;
   for (const auto& prefix : prefixes) {
     VsLocalSession local;
-    if (!vsLoadLocalSession(prefix, local)) continue;
+    if (!vsLoadLocalSession(prefix, local, &preparedSessions[preparedIndex++])) continue;
 
     const uint32_t chunks = vsCountChunks(local, false);
     if (chunks == 0) {
@@ -1226,7 +1228,8 @@ static bool vs067SyncAllPending() {
 #ifdef VISITESCRIBE_DIRECT_OPUS
   vsDoRecoverActiveSessions();
 #endif
-  const auto prefixes = vsPendingPrefixes();
+  std::vector<VsLocalSession> preparedSessions;
+  const auto prefixes = vsPendingPrefixes(&preparedSessions);
   Serial.printf("SERVER: pending queue count=%u", (unsigned)prefixes.size());
   for (const auto& prefix : prefixes) {
     Serial.printf(" %s", prefix.c_str());
@@ -1242,11 +1245,12 @@ static bool vs067SyncAllPending() {
 
   String serverKeyId, serverPublicPem;
   if (!vsFetchServerKey(serverKeyId, serverPublicPem)) return false;
+  size_t preparedIndex = 0;
   for (const auto& prefix : prefixes) {
     if (WiFi.status() != WL_CONNECTED) return vsFail("WiFi verbinding verloren");
 
     VsLocalSession local;
-    if (!vsLoadLocalSession(prefix, local)) {
+    if (!vsLoadLocalSession(prefix, local, &preparedSessions[preparedIndex++])) {
       return vsFail(String("Lokale sessie fout: ") + prefix);
     }
 
