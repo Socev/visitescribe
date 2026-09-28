@@ -1335,8 +1335,7 @@ void handleTouch(int x, int y) {
       if (SYNC_RETRY.contains(x,y) &&
           (!vsSyncRetryAllowedHook || vsSyncRetryAllowedHook())) {
         startWifiAttempt(0);
-      } else if (SYNC_BACK.contains(x,y) ||
-                 (vsSyncDoneHook && vsSyncDoneHook())) {
+      } else if (SYNC_BACK.contains(x,y)) {
         wifiOff();
         syncPhase = SyncPhase::NOT_STARTED;
         goHome();
