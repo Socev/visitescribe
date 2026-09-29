@@ -475,6 +475,21 @@ static const char* vs080StatusAccount(uint16_t& color) {
   return vsFleetOwnerEmail.c_str();
 }
 
+// HOME, top-left: the OurMind account instead of "Brian", once known. Long
+// addresses are shortened so they never run into the battery figure.
+static const char* vs080HomeName(uint16_t& color) {
+  if (!vsFleetLinked || !vsFleetOwnerEmail.length()) return nullptr;
+  static char shown[36];
+  const size_t max = 32;
+  if (vsFleetOwnerEmail.length() <= max) {
+    snprintf(shown, sizeof(shown), "%s", vsFleetOwnerEmail.c_str());
+  } else {
+    snprintf(shown, sizeof(shown), "%.*s..", (int)(max - 2), vsFleetOwnerEmail.c_str());
+  }
+  color = vsFleetOwnerOurMind ? C_NAVY : C_AMBER;
+  return shown;
+}
+
 static const char* vs080DetailsInfo() {
   static char line[64];
   snprintf(line, sizeof(line), "%s  v%s", vsFleetDeviceId(), VISITESCRIBE_FW_VERSION);
@@ -496,6 +511,7 @@ void setup() {
   vsDetailsAction2Label = "Reset";
   vsDetailsInfoHook = vs080DetailsInfo;
   vsStatusAccountHook = vs080StatusAccount;
+  vsHomeNameHook = vs080HomeName;
 
   setup_v067();
 

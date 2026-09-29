@@ -123,6 +123,9 @@ static const char* vsDetailsActionLabel = nullptr;
 // Optional extra Apparaatstatus line (v0.8: the linked OurMind account).
 // Returns the value text and sets its colour; nullptr = no line.
 static const char* (*vsStatusAccountHook)(uint16_t& color) = nullptr;
+// Optional replacement for "Brian" top-left on the HOME screen (v0.8: the
+// linked OurMind account). nullptr = keep "Brian".
+static const char* (*vsHomeNameHook)(uint16_t& color) = nullptr;
 static void (*vsDetailsAction2Hook)() = nullptr;
 static const char* vsDetailsAction2Label = nullptr;
 static const Rect DETAILS_LEFT  {16,148,144,40};
@@ -408,7 +411,15 @@ void drawHeader(const char* status, const char* sub = nullptr) {
   M5.Display.setTextDatum(top_left);
   M5.Display.setTextColor(C_NAVY);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("Brian", 10, 7);
+  uint16_t nameColor = C_NAVY;
+  const char* name = (state == AppState::HOME && vsHomeNameHook)
+      ? vsHomeNameHook(nameColor) : nullptr;
+  if (name && name[0]) {
+    M5.Display.setTextColor(nameColor);
+    M5.Display.drawString(name, 10, 7);
+  } else {
+    M5.Display.drawString("Brian", 10, 7);
+  }
 
   char batt[24];
   if (batteryPct < 0) snprintf(batt, sizeof(batt), "--%%");
