@@ -32,7 +32,15 @@
 static constexpr uint32_t VS_DO_RATE = 16000;
 static constexpr uint16_t VS_DO_CHANNELS = 1;
 static constexpr uint16_t VS_DO_BITS = 16;
-static constexpr uint32_t VS_DO_BITRATE = 24000;
+// The StickS3 keeps its recordings in ~4 MB of flash instead of a microSD
+// card: 16 kbit/s gives ~33 minutes between syncs and is still ample for
+// speech recognition. The number also goes into the manifest (main_v066).
+#if VS_STICK
+#define VS_DO_BITRATE_TEXT "16000"
+#else
+#define VS_DO_BITRATE_TEXT "24000"
+#endif
+static constexpr uint32_t VS_DO_BITRATE = VS_STICK ? 16000 : 24000;
 static constexpr uint32_t VS_DO_FRAME_MS = 20;
 static constexpr uint32_t VS_DO_FRAME_SAMPLES =
     VS_DO_RATE * VS_DO_FRAME_MS / 1000;  // 320
@@ -525,7 +533,8 @@ static bool vsDoOpenChunk() {
   wavFinalPath[sizeof(wavFinalPath) - 1] = '\0';
 
   Serial.printf(
-      "DIRECT OPUS: chunk %lu OPEN %s rate=16000 mono bitrate=24000 vbr=1 frame=20ms\n",
+      "DIRECT OPUS: chunk %lu OPEN %s rate=16000 mono bitrate=" VS_DO_BITRATE_TEXT
+      " vbr=1 frame=20ms\n",
       (unsigned long)vsDoChunkSequence, vsDoFinalPath);
   return true;
 }
@@ -884,6 +893,44 @@ static bool vsDirectOpusConsumeStereo(const int16_t* samples, size_t count) {
           vsDoProducerFailed = true;
           return vsDoFail("vsDirectOpusConsumeStereo", __LINE__);
         }
+      }
+    }
+  }
+  return true;
+}
+
+// StickS3: the ES8311 delivers 16 kHz mono directly (M5Unified's tested
+// configuration for this board), so frames are filled without resampling.
+static bool vsDirectOpusConsumeMono16k(const int16_t* samples, size_t count) {
+  if (vsDoProducerFailed) return false;
+  if (!samples || !count) return true;
+  if (vsDoPcmFill >= VS_DO_FRAME_SAMPLES) {
+    vsDoPcmFill = 0;
+    vsDoProducerFailed = true;
+    return vsDoFail("vsDirectOpusConsumeMono16k", __LINE__);
+  }
+  // Level check for the first hardware tests of the mono microphone: the
+  // loudest sample of every 10 s, in the logbook.
+  static int32_t peak = 0;
+  static uint32_t seen = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const int32_t a = samples[i] < 0 ? -(int32_t)samples[i] : samples[i];
+    if (a > peak) peak = a;
+  }
+  seen += count;
+  if (seen >= VS_DO_RATE * 10) {
+    Serial.printf("AUDIO: peak %ld of 32767 (%ld%%) last 10 s\n",
+                  (long)peak, (long)(peak * 100 / 32767));
+    peak = 0;
+    seen = 0;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    vsDoPcmFrame[vsDoPcmFill++] = samples[i];
+    if (vsDoPcmFill == VS_DO_FRAME_SAMPLES) {
+      vsDoPcmFill = 0;
+      if (!vsDoQueuePcmFrame()) {
+        vsDoProducerFailed = true;
+        return vsDoFail("vsDirectOpusConsumeMono16k", __LINE__);
       }
     }
   }

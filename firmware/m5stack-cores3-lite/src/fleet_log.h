@@ -29,7 +29,12 @@
 
 static constexpr size_t VS_LOG_RING_BYTES = 256U * 1024U;
 static constexpr size_t VS_LOG_LINE_MAX = 300;
+// StickS3: the logbook shares ~4 MB of flash with the recordings.
+#if defined(VISITESCRIBE_BOARD_STICKS3)
+static constexpr size_t VS_LOG_FILE_MAX = 96U * 1024U;
+#else
 static constexpr size_t VS_LOG_FILE_MAX = 512U * 1024U;
+#endif
 static const char* const VS_LOG_DIR = "/brianlog";
 static const char* const VS_LOG_CUR = "/brianlog/log_cur.txt";
 static const char* const VS_LOG_OLD = "/brianlog/log_old.txt";

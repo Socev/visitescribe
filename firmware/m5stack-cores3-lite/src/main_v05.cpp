@@ -39,6 +39,10 @@ static bool speechGainApplied = false;
 static bool speechGainOk = false;
 
 static bool applySpeechMicProfile() {
+#if VS_STICK
+  // ES8311: M5Unified already sets the ADC to its maximum digital gain.
+  return true;
+#endif
   bool ok = true;
 
   // Analog PGA for the two onboard microphone channels.

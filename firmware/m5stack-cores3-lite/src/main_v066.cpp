@@ -167,8 +167,96 @@ static const char* vsStageName(VsServerStage stage) {
   return "Synchroniseer";
 }
 
+#if VS_STICK
+// StickS3 (portrait) version of the sync screen. Redrawn only when something
+// shown actually changed, so the small screen does not flicker.
+static void vsStickDrawServerSync(bool force) {
+  const bool error = vsServerStage == VsServerStage::ERROR;
+  const bool done = vsServerStage == VsServerStage::DONE ||
+                    vsServerStage == VsServerStage::NOTHING;
+  const uint32_t handled = vsServerSessionsDone + vsServerSessionsSkipped;
+  const uint32_t pct = vsServerChunkTotal
+      ? (uint32_t)((uint64_t)min(vsServerChunkCurrent, vsServerChunkTotal) * 100 / vsServerChunkTotal)
+      : 0;
+  static uint32_t lastSig = 0;
+  const uint32_t sig = ((uint32_t)vsServerStage << 24) ^ (handled << 16) ^
+                       (vsServerSessionsTotal << 8) ^ (pct << 1) ^
+                       ((uint32_t)vsStickFocus << 20) ^ (vsServerSyncRunning ? 1 : 0);
+  if (!force && sig == lastSig) return;
+  lastSig = sig;
+
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(HEADER_H + 11, "Synchroniseer", C_NAVY, 1);
+  int y = stickWrapped(46, vsStageName(vsServerStage),
+                       error ? C_AMBER : (done ? C_GREEN : C_NAVY), 2, 2);
+
+  if (done) {
+    char line[40];
+    if (vsServerStage == VsServerStage::DONE) {
+      snprintf(line, sizeof(line), "%lu opname%s ontvangen",
+               (unsigned long)vsServerSessionsDone, vsServerSessionsDone == 1 ? "" : "s");
+      y = stickWrapped(y + 6, line, C_NAVY, 1, 2);
+      y = stickWrapped(y, "en van Brian gewist", C_GREY, 1, 1);
+    } else {
+      y = stickWrapped(y + 6, "Geen opnames te verzenden", C_GREY, 1, 2);
+    }
+    stickDrawOptions(stickOptionsTop());
+    return;
+  }
+  if (error) {
+    String e = vsServerError;
+    if (e.length() > 60) e = e.substring(0, 60);
+    if (e.length()) y = stickWrapped(y + 4, e.c_str(), C_GREY, 1, 3);
+    const uint32_t remaining =
+        vsServerSessionsTotal > handled ? vsServerSessionsTotal - handled : 0;
+    char line[40];
+    snprintf(line, sizeof(line), "%lu nog te verzenden", (unsigned long)remaining);
+    y = stickWrapped(y + 2, line, C_NAVY, 1, 1);
+    stickDrawOptions(stickOptionsTop());
+    return;
+  }
+  if (vsServerSessionsTotal > 0) {
+    char line[40];
+    snprintf(line, sizeof(line), "Opname %lu van %lu",
+             (unsigned long)vsSyncCurrentOrdinal(handled, vsServerSessionsTotal),
+             (unsigned long)vsServerSessionsTotal);
+    centeredText(y + 10, line, C_NAVY, 1);
+    y += 22;
+  }
+  if (vsServerStage == VsServerStage::UPLOAD_CHUNKS && vsServerChunkTotal > 0) {
+    const int barX = 10, barW = SCREEN_W - 20, barH = 10;
+    M5.Display.fillRoundRect(barX, y, barW, barH, 5, C_SOFT);
+    const int fillW = (int)((uint64_t)barW * pct / 100);
+    if (fillW > 0) M5.Display.fillRoundRect(barX, y, fillW, barH, 5, C_VIOLET);
+    y += 18;
+  }
+  if (vsServerSyncRunning) {
+    stickWrapped(y + 4, "Opnames blijven op Brian tot de server ze bevestigt", C_GREY, 1, 3);
+    drawPwrHints("Bezig - knoppen uit");
+  }
+}
+
+// render() -> drawSync() while the engine owns the screen: same picture.
+static bool vsStickServerSyncOwnsScreen() {
+  if (syncPhase != SyncPhase::CONNECTED && vsServerStage == VsServerStage::IDLE) return false;
+  vsStickDrawServerSync(true);
+  return true;
+}
+struct VsStickSyncDrawInstaller {
+  VsStickSyncDrawInstaller() { vsStickServerSyncDraw = &vsStickServerSyncOwnsScreen; }
+};
+static VsStickSyncDrawInstaller vsStickSyncDrawInstaller;
+#endif
+
 static void vsDrawServerSync(bool force = false) {
   if (state != AppState::SYNC) return;
+#if VS_STICK
+  if (!force && millis() - vsServerLastDrawMs < 200) return;
+  vsServerLastDrawMs = millis();
+  vsStickDrawServerSync(force);
+  return;
+#endif
   if (!force && millis() - vsServerLastDrawMs < 200) return;
   vsServerLastDrawMs = millis();
 
@@ -1164,6 +1252,9 @@ static bool vsPrepareDirectOpusChunk(
   return meta.ciphertextSha256.length() == 64;
 }
 
+#ifndef VS_DO_BITRATE_TEXT
+#define VS_DO_BITRATE_TEXT "24000"
+#endif
 static bool vsWriteDirectOpusManifest(
     const VsLocalSession& session,
     const uint8_t sessionKey[32],
@@ -1185,7 +1276,7 @@ static bool vsWriteDirectOpusManifest(
       "\"audio\":{\"codec\":\"opus\",\"container\":\"ogg\","
       "\"sample_rate\":16000,\"channels\":1,"
       "\"sample_format\":\"opus\",\"chunk_seconds\":30,"
-      "\"bitrate\":24000,\"frame_ms\":20},"
+      "\"bitrate\":" VS_DO_BITRATE_TEXT ",\"frame_ms\":20},"
       "\"encryption\":{\"algorithm\":\"AES-256-GCM\","
       "\"local_key_wrap\":null,"
       "\"server_key_wrap\":{\"algorithm\":\"RSA-OAEP-SHA256\","

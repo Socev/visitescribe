@@ -267,6 +267,8 @@ static bool vsFleetApplyWifiOps(JsonArrayConst ops) {
   return changed;
 }
 
+static void vsFleetReportFor(const String& releaseId, const char* state, const String& detail);
+
 static bool vsFleetFetchConfig(bool& wifiChanged) {
   wifiChanged = false;
   String resp;
@@ -311,6 +313,20 @@ static bool vsFleetFetchConfig(bool& wifiChanged) {
     if (!vsFleetUpdate.releaseId.length() || !vsFleetUpdate.url.startsWith("/v1/") ||
         vsFleetUpdate.sha256.length() != 64 || !vsFleetUpdate.size) {
       Serial.println("FLEET: firmware_update block incomplete; ignored");
+      vsFleetUpdate.present = false;
+    }
+    // An image built for another Brian (CoreS3 vs StickS3) would not even fit
+    // this flash layout. The server checks this too; never rely on one side.
+    const String board = fw["board"] | "";
+    if (vsFleetUpdate.present && board.length() && board != VISITESCRIBE_FW_BOARD) {
+      static String refused;     // report once, not at every config fetch
+      if (refused != vsFleetUpdate.releaseId) {
+        refused = vsFleetUpdate.releaseId;
+        Serial.printf("FLEET: update %s is for board %s, this is %s; refused\n",
+                      vsFleetUpdate.version.c_str(), board.c_str(), VISITESCRIBE_FW_BOARD);
+        vsFleetReportFor(vsFleetUpdate.releaseId, "failed",
+                         String("image voor ") + board + ", dit is " + VISITESCRIBE_FW_BOARD);
+      }
       vsFleetUpdate.present = false;
     }
   }
@@ -415,6 +431,21 @@ static void vsFleetUploadLogs() {
 // --------------------------------------------------------------------------
 
 static void vsFleetDrawPairing(const char* note = nullptr) {
+#if VS_STICK
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(HEADER_H + 11, "Koppelen", C_NAVY, 2);
+  stickWrapped(46, "Koppelcode voor de beheerder", C_GREY, 1, 2);
+  {
+    String shown = vsFleetPairingCode;
+    if (shown.length() == 6) shown = shown.substring(0, 3) + " " + shown.substring(3);
+    centeredText(98, shown.length() ? shown.c_str() : "------", C_BLUE, 3);
+  }
+  stickWrapped(122, vsFleetDeviceId(), C_GREY, 1, 2);
+  stickWrapped(148, note ? note : "Opnames blijven bewaard tot koppeling", C_GREY, 1, 3);
+  if (vsFleetLinked) drawPwrHints("Knop: later koppelen");
+  return;
+#endif
   drawHeader("Koppelen");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
   centeredText(66, "Koppelcode voor de beheerder", C_GREY, 1);
@@ -431,6 +462,28 @@ static void vsFleetDrawPairing(const char* note = nullptr) {
 // --------------------------------------------------------------------------
 
 static void vsFleetDrawUpdate(const char* line, uint32_t done, uint32_t total, uint16_t color = C_NAVY) {
+#if VS_STICK
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(HEADER_H + 11, "Software-update", C_NAVY, 1);
+  {
+    const String v = String(VISITESCRIBE_FW_VERSION) + " -> " + vsFleetUpdate.version;
+    centeredText(48, v.c_str(), C_GREY, 1);
+  }
+  int y = stickWrapped(62, line, color, 2, 2);
+  if (total) {
+    const int x = 8, w = SCREEN_W - 16, h = 12;
+    y += 6;
+    M5.Display.drawRoundRect(x, y, w, h, 5, C_LINE);
+    const int fill = (int)((uint64_t)(w - 4) * done / total);
+    M5.Display.fillRoundRect(x + 2, y + 2, fill, h - 4, 3, C_BLUE);
+    char pct[16];
+    snprintf(pct, sizeof(pct), "%u%%", (unsigned)((uint64_t)done * 100 / total));
+    centeredText(y + 24, pct, C_GREY, 1);
+  }
+  stickWrapped(172, "Niet uitzetten - opnames blijven bewaard", C_GREY, 1, 3);
+  return;
+#endif
   drawHeader("Software-update");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
   const String v = String("Versie ") + VISITESCRIBE_FW_VERSION + " -> " + vsFleetUpdate.version;
@@ -611,8 +664,16 @@ static void vsFleetMaybeUpdate() {
     Serial.printf("FLEET: update failed: %s\n", error.c_str());
     vsFleetReport("failed", error);
     vsFleetDrawUpdate("Update mislukt", 0, 0, C_RED);
+#if VS_STICK
+    M5.Display.fillRect(0, 104, SCREEN_W, 100, C_WHITE);
+    {
+      const int y = stickWrapped(108, error.c_str(), C_GREY, 1, 3);
+      stickWrapped(y + 4, "Brian werkt verder op de oude versie", C_GREY, 1, 3);
+    }
+#else
     centeredText(140, error.c_str(), C_GREY, 1);
     centeredText(160, "Brian werkt gewoon verder op de oude versie", C_GREY, 1);
+#endif
     const uint32_t until = millis() + 5000;
     while ((int32_t)(millis() - until) < 0) delay(20);
     return;

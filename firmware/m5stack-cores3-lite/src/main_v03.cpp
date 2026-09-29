@@ -198,11 +198,28 @@ static void pocketSinglePowerV03() {
     return;
   }
 
+#if VS_STICK
+  // The flash holds about 33 minutes. Never start a recording that has no
+  // room: the doctor would find out only when it stops.
+  if (vsStickMinutesLeft(true) < 2) {
+    uiErrorTitle = "Opslag vol";
+    uiErrorDetail = "Synchroniseer eerst, dan is er weer ruimte";
+    state = AppState::ERROR;
+    screenDirty = true;
+    return;
+  }
+  vsStickStoppedForSpace = false;
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(104, "Opname", C_NAVY, 2);
+  centeredText(126, "starten...", C_NAVY, 2);
+#else
   // The gesture is now unambiguously a single click. Show feedback before
   // synchronous SD/encoder/worker initialization; do not claim capture yet.
   drawHeader("");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
   centeredText(104, "Opname starten...", C_NAVY, 2);
+#endif
   if (!startQuickSession()) {
     state = AppState::ERROR;
     if (!uiErrorTitle.length()) uiErrorTitle = "Opnemen niet mogelijk";
@@ -248,9 +265,45 @@ static void pocketDoublePowerV03() {
 
 static void serviceInputsV03() {
   uint8_t pek = 0;
+#if VS_STICK
+  // The front button is the PWR key: its click becomes the same PEK event the
+  // CoreS3 reads from the AXP2101, and everything below handles it unchanged.
+  // The side button replaces touch.
+  vsStickPollButtons();
+  const bool stickA = vsStickTakeA();
+  const bool stickB = vsStickTakeB();
+  if (stickA || stickB) {
+    const bool chooser = quickModeChoiceActive && state == AppState::RECORDING;
+    if (!chooser && displayPower == DisplayPower::OFF) {
+      // Either button on a dark screen only wakes it.
+      wakeOnlyIfOff();
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      pwrWakeGuardUntilV03 = millis() + PWR_DOUBLE_CLICK_MS;
+    } else if (!chooser && vsStickOptionScreen()) {
+      // A screen with choices: side = next choice, front = choose it now
+      // (no double-click wait: 2x has no meaning on these screens).
+      noteActivity();
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      if (stickB) vsStickFocusNext();
+      if (stickA) vsStickActivate();
+    } else if (stickA) {
+      pek = 0x02;
+    } else if (chooser) {
+      pek = 0x02;               // side button cycles the chooser too
+    } else if (state == AppState::HOME || state == AppState::FINISHED) {
+      noteActivity();
+      pwrClickPendingV03 = false;
+      pwrFirstClickMsV03 = 0;
+      pocketOpenMenuV03();      // side button at rest: the menu
+    }
+  }
+#else
   if (axp2101DirectOk) {
     pek = M5.Power.Axp2101.getPekPress();
   }
+#endif
 
   if ((pek & 0x02) != 0) {
     const AppState before = state;
@@ -299,8 +352,13 @@ static void serviceInputsV03() {
         pwrClickPendingV03 = true;
         pwrFirstClickMsV03 = now;
         if (state == AppState::HOME) {
+#if VS_STICK
+          M5.Display.fillRect(0, 186, SCREEN_W, 16, C_WHITE);
+          centeredText(194, "Knop ontvangen", C_BLUE, 1);
+#else
           M5.Display.fillRect(0, 147, SCREEN_W, 27, C_WHITE);
           centeredText(160, "PWR ontvangen", C_BLUE, 1);
+#endif
           Serial.printf("PWR feedback latency=%lums\n", (unsigned long)(millis() - now));
         }
         Serial.printf("PWR first-click pending app=%u\n", (unsigned)before);
@@ -406,13 +464,22 @@ static void serviceInputsV03() {
     drawMenuV03();
   }
 
-  M5.update();
+#if !VS_STICK
+  M5.update();   // StickS3: already done by vsStickPollButtons()
+#endif
 }
 
 void VISITESCRIBE_V03_SETUP_NAME() {
   setup_v02();
 
+#if VS_STICK
+  axp2101DirectOk = false;              // M5PM1, not an AXP2101
+  vsStickMenuTouch = handleMenuTouchV03;
+  M5.BtnA.setHoldThresh(800);
+  M5.BtnB.setHoldThresh(800);
+#else
   axp2101DirectOk = M5.Power.Axp2101.begin();
+#endif
 
   // This firmware reads FT6336 directly only while touch is actually useful.
   // Disable M5Unified's own Touch.update() path so M5.update() no longer polls

@@ -702,3 +702,52 @@ points, markers) and `tests/false_start_host.py` (marker cleared on discard).
 number" would reuse `s00001` for nearly every recording, so `findNextSessionId`
 now continues after the last number used (NVS `vsmarker/lastsid`), skips any
 number still on the card, and wraps only after 64999.
+
+## Brian on the M5Stack StickS3
+
+The same firmware also builds for the **M5Stack StickS3** (ESP32-S3-PICO-1-N8R8:
+8 MB flash, 8 MB octal PSRAM, 135×240 screen, ES8311 mono microphone, two
+buttons, no microSD, 250 mAh). Recording, Opus, encryption, upload, fleet
+(hotspot setup, pairing, Wi-Fi from the server, OTA), logbook, delete-after-sync
+and the action markers are shared code. What differs:
+
+| | CoreS3-Lite | StickS3 |
+|---|---|---|
+| Build | `cores3-lite-direct-opus` / `-release` | `sticks3` / `sticks3-release` |
+| Board in marker/heartbeat | `cores3-lite` | `sticks3` |
+| Storage | microSD | LittleFS in flash (`partitions_sticks3.csv`, ~4.1 MB) |
+| Audio | 48 kHz stereo → 16 kHz mono, Opus 24 kbit/s | 16 kHz mono direct, Opus 16 kbit/s |
+| Screens | `main_v02.cpp` … | `src/ui_sticks3.h` + `#if VS_STICK` blocks |
+| Input | PWR key + touch | front button + side button |
+
+`src/board.h` selects the board. On the StickS3 `SD` is a LittleFS instance,
+so every path (`/visitescribe/...`, `/brianlog/...`) and every older layer
+work unchanged; pins 35–37 (the CoreS3 SD bus) carry the Stick's PSRAM and are
+never touched.
+
+**Buttons.** The front button is the CoreS3 PWR key: 1× start/stop, 2× menu /
+next patient / marker, and during the first 10 s of a recording every press
+moves the Patient → Vergadering → STOP choice. The side button replaces touch:
+on a screen with choices (menu, status, details, sync result, error, charge
+countdown) it moves the selection and the front button chooses it at once. A
+choice runs exactly what tapping that CoreS3 button runs. At rest the side
+button opens the menu. Either button on a dark screen only wakes it.
+
+**Factory reset** (Details → Reset): four presses in a random order of front
+and side button, shown on screen; a wrong press or 30 s cancels.
+
+**Storage.** HOME shows the minutes that still fit (~33 at 16 kbit/s). Below
+5 minutes the recording screen warns; below 1 minute the recording is stopped
+and saved properly (the Opgeslagen screen says why); a recording cannot start
+with less than 2 minutes free. Syncing frees the space (delete after sync).
+The logbook files are capped at 96 KB each on the Stick.
+
+**Flashing a new StickS3** (USB, once): `py -m platformio run -e sticks3 -t upload`.
+The first start formats the LittleFS partition and opens the setup hotspot,
+exactly like a new CoreS3. Updates after that go over the air with the
+`sticks3-release` image; the server only offers a StickS3 image to a StickS3.
+
+**To verify on hardware:** microphone level (`AUDIO: peak ...` every 10 s in
+the logbook while recording), which physical button M5Unified reports as
+BtnA/BtnB, battery/charging figures from the M5PM1, recording while the flash
+writes (no `dropped frames`), and a sync + OTA round trip.

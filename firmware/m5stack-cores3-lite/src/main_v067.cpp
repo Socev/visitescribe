@@ -108,6 +108,15 @@ static bool vsUsbSafePath(const String& path) {
 }
 
 static void vsUsbDraw(const char* status, const char* sub = nullptr) {
+#if VS_STICK
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
+  centeredText(HEADER_H + 11, "USB SYNC", C_NAVY, 2);
+  if (sub && sub[0]) centeredText(HEADER_H + 30, sub, C_GREY, 1);
+  stickWrapped(90, status, C_BLUE, 2, 3);
+  stickWrapped(160, "PC beheert sync - opnames blijven lokaal", C_GREY, 1, 3);
+  return;
+#endif
   drawHeader("USB SYNC", sub);
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_BG);
   centeredText(105, status, C_BLUE, 2);
@@ -1408,10 +1417,17 @@ static void vsRecoveryUiPoll() {
   const uint32_t now = millis();
   if (now - vsRecoveryUiPainted < 250) return;
   vsRecoveryUiPainted = now;
+#if VS_STICK
+  M5.Display.fillRect(0, 130, SCREEN_W, 60, C_WHITE);
+  stickWrapped(134, vsRecoveryUiPhase, C_GREY, 1, 2);
+  char elapsed[40]; snprintf(elapsed, sizeof(elapsed), "%lu seconden", (unsigned long)((now-vsRecoveryUiStarted)/1000));
+  centeredText(176, elapsed, C_GREY, 1);
+#else
   M5.Display.fillRect(0, 118, SCREEN_W, 64, C_WHITE);
   centeredText(130, vsRecoveryUiPhase, C_GREY, 1);
   char elapsed[40]; snprintf(elapsed, sizeof(elapsed), "%lu seconden", (unsigned long)((now-vsRecoveryUiStarted)/1000));
   centeredText(160, elapsed, C_GREY, 1);
+#endif
 }
 static void vsRecoveryUiProgress(const char* phase) {
   vsRecoveryUiPhase = phase;
@@ -1420,10 +1436,19 @@ static void vsRecoveryUiProgress(const char* phase) {
 static void vsBootRecover() {
   noteActivity();
   vsRecoveryUiStarted = millis(); vsRecoveryUiPainted = 0;
+#if VS_STICK
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H-HEADER_H, C_WHITE);
+  centeredText(HEADER_H + 11, "Opstarten", C_NAVY, 1);
+  centeredText(66, "Opnames", C_NAVY, 2);
+  centeredText(88, "controleren", C_NAVY, 2);
+  stickWrapped(104, "Even wachten", C_GREY, 1, 1);
+#else
   drawHeader("Opstarten");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H-HEADER_H, C_WHITE);
   centeredText(78, "Opnames controleren", C_NAVY, 2);
   centeredText(103, "Herstellen indien nodig - even wachten", C_GREY, 1);
+#endif
   vsSessionScanProgressHook = vsRecoveryUiPoll;
   vsDoRecoveryProgressHook = vsRecoveryUiProgress;
   vsDoRecoverActiveSessions();
@@ -1501,6 +1526,10 @@ void loop() {
     vsSuspendChargeAutoSync();
     // In USB maintenance PWR only wakes the screen; never run recorder actions.
     if (axp2101DirectOk && (M5.Power.Axp2101.getPekPress() & 0x02)) noteActivity();
+#if VS_STICK
+    vsStickPollButtons();
+    if (vsStickTakeA() | vsStickTakeB()) noteActivity();
+#endif
     serviceDisplayPower();
     delay(1);
     return;

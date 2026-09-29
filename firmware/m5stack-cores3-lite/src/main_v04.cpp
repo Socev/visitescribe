@@ -132,8 +132,14 @@ void VISITESCRIBE_V04_SETUP_NAME() {
   // The old path already tried once. Only do the slower/power-aware recovery
   // when that first official 25 MHz mount failed.
   if (!sdOk) {
+#if VS_STICK
+    // Flash, not a card: no power rail or bus speed to try. Mount once more.
+    Serial.println("FLASH: file system mount failed; retrying");
+    sdOk = ensureStorage();
+#else
     Serial.println("SD: initial mount failed; starting v0.4 recovery");
     sdOk = robustSdMount();
+#endif
     screenDirty = true;
     render(true);
   } else {

@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <esp_system.h>
 #include <Preferences.h>
+#include "board.h"
 #include "brian_ourmind_logo.h"
 
 // v0.8 (main_v080.cpp) supplies Wi-Fi from NVS and defines these itself.
@@ -27,9 +28,17 @@
 // - AXP2101 PEK status for the physical power button
 // This deliberately does not depend on M5Unified's synthesized touch/button events.
 
+#if VS_STICK
+// StickS3: 135 x 240 portrait, USB at the bottom, front button below the
+// screen. A slim top bar; screens live in ui_sticks3.h.
+static constexpr int SCREEN_W = 135;
+static constexpr int SCREEN_H = 240;
+static constexpr int HEADER_H = 16;
+#else
 static constexpr int SCREEN_W = 320;
 static constexpr int SCREEN_H = 240;
 static constexpr int HEADER_H = 40;
+#endif
 
 static constexpr int SD_SCK  = 36;
 static constexpr int SD_MISO = 35;
@@ -41,8 +50,15 @@ static constexpr uint8_t FT6336_ADDR = 0x38;
 static constexpr uint8_t AW9523_ADDR = 0x58;
 static constexpr uint32_t I2C_HZ = 400000;
 
+#if VS_STICK
+// ES8311 mono microphone at 16 kHz: M5Unified's own configuration for the
+// StickS3, and exactly the Opus encoder's input rate (no resampling).
+static constexpr uint32_t AUDIO_RATE = 16000;
+static constexpr uint16_t AUDIO_CHANNELS = 1;
+#else
 static constexpr uint32_t AUDIO_RATE = 48000;
 static constexpr uint16_t AUDIO_CHANNELS = 2;
+#endif
 static constexpr uint16_t AUDIO_BITS = 16;
 static constexpr size_t AUDIO_BLOCK_SAMPLES = 4096;
 static int16_t audioBufA[AUDIO_BLOCK_SAMPLES];
@@ -210,6 +226,7 @@ struct __attribute__((packed)) WAVHeader {
   uint32_t dataSize = 0;
 };
 
+#if !VS_STICK   // StickS3 versions of the screen code: ui_sticks3.h
 void centeredText(int y, const char* text, uint16_t color, uint8_t size = 1) {
   M5.Display.setTextColor(color);
   M5.Display.setTextSize(size);
@@ -391,6 +408,8 @@ static void drawPwrHints(const char* first, const char* second = nullptr) {
   }
 }
 
+#endif  // !VS_STICK
+
 static uint32_t pendingCountUi() {
   return vsPendingCountHook ? vsPendingCountHook() : 0;
 }
@@ -407,6 +426,7 @@ void refreshBattery() {
   lastBatteryRefreshMs = millis();
 }
 
+#if !VS_STICK
 void drawHeader(const char* status, const char* sub = nullptr) {
   M5.Display.fillRect(0, 0, SCREEN_W, HEADER_H, C_WHITE);
   M5.Display.setTextDatum(top_left);
@@ -444,6 +464,7 @@ void drawHeader(const char* status, const char* sub = nullptr) {
   }
   M5.Display.drawFastHLine(0, HEADER_H - 1, SCREEN_W, C_LINE);
 }
+#endif  // !VS_STICK
 
 const char* modeTitle(Mode m) {
   if (m == Mode::VISIT) return "Patient";
@@ -483,6 +504,9 @@ void formatElapsed(char* out, size_t len) {
   formatCompactElapsed(activeElapsedMs(), out, len);
 }
 
+#if VS_STICK
+#include "ui_sticks3.h"
+#else
 void drawHome() {
   drawHeader("");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
@@ -897,8 +921,16 @@ void render(bool force = false) {
     case AppState::ERROR: drawError(); break;
   }
 }
+#endif  // !VS_STICK
 
 bool ensureStorage() {
+#if VS_STICK
+  // Flash file system; pins 35-37 carry the StickS3's octal PSRAM, so the
+  // CoreS3 SD pins must never be touched here.
+  if (!SD.mount()) return false;
+  if (!SD.exists("/visitescribe")) SD.mkdir("/visitescribe");
+  return SD.exists("/visitescribe");
+#endif
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, SPI, SD_HZ)) return false;
   if (SD.cardType() == CARD_NONE) return false;
@@ -907,6 +939,9 @@ bool ensureStorage() {
 }
 
 bool ensureTouchController() {
+#if VS_STICK
+  return false;   // no touch screen; the side button replaces it
+#endif
   if (M5.In_I2C.scanID(FT6336_ADDR, 100000)) return true;
   // CoreS3-Lite: FT6336 RESET = AW9523 P0_0. Re-assert it if needed.
   M5.In_I2C.bitOff(AW9523_ADDR, 0x04, 0x01, I2C_HZ); // P0_0 = output
@@ -1045,7 +1080,7 @@ void audioReleased(void*, void* data, size_t length) {
 }
 
 bool queueAudio(int16_t* buffer) {
-  return M5.Mic.record(buffer, AUDIO_BLOCK_SAMPLES, AUDIO_RATE, true);
+  return M5.Mic.record(buffer, AUDIO_BLOCK_SAMPLES, AUDIO_RATE, AUDIO_CHANNELS == 2);
 }
 
 void serviceAudio() {
@@ -1060,7 +1095,11 @@ void serviceAudio() {
   while (xQueueReceive(audioDoneQueue, &done, 0) == pdTRUE) {
 #ifdef VISITESCRIBE_DIRECT_OPUS
     if (done.data && done.samples) {
+#if VS_STICK
+      if (!vsDirectOpusConsumeMono16k(done.data, done.samples)) {
+#else
       if (!vsDirectOpusConsumeStereo(done.data, done.samples)) {
+#endif
         if (!audioError) vsDoTrace("audioError: consumeStereo");
         audioError = true;
       }
@@ -1102,8 +1141,16 @@ bool startCapture() {
   M5.Speaker.end();
   auto cfg = M5.Mic.config();
   cfg.sample_rate = AUDIO_RATE;
+#if VS_STICK
+  // StickS3: keep M5Unified's board configuration (mono, oversampling 2), but
+  // give the I2S DMA ~150 ms instead of ~30 ms. Recordings go to internal
+  // flash, and a flash erase stalls both cores' cache for tens of ms.
+  cfg.dma_buf_len = 400;
+  cfg.dma_buf_count = 12;
+#else
   cfg.input_channel = m5::input_stereo;
   cfg.over_sampling = 1;
+#endif
   cfg.noise_filter_level = 0;
 #ifdef VISITESCRIBE_DIRECT_OPUS
   // Keep microphone DMA/capture above the encoder. Opus gets the same core at
@@ -1749,13 +1796,21 @@ void setup() {
   Serial.printf("BOOT: reset_reason=%d\n", (int)bootResetReason);
 
   auto cfg = M5.config();
+#if VS_STICK
+  cfg.fallback_board = m5::board_t::board_M5StickS3;
+#else
   cfg.fallback_board = m5::board_t::board_M5StackCoreS3;
+#endif
   cfg.pmic_button = false;       // direct AXP2101 handling in serviceInputs()
   cfg.internal_mic = true;
   cfg.internal_spk = true;
   M5.begin(cfg);
 
+#if VS_STICK
+  M5.Display.setRotation(0);   // portrait, USB at the bottom
+#else
   M5.Display.setRotation(1);
+#endif
   M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
   M5.Display.fillScreen(C_BG);
   M5.Speaker.end();
@@ -1779,8 +1834,13 @@ void setup() {
                 (int)M5.getBoard(), (int)M5.Power.getType(), touchOk ? "OK" : "FAIL", sdOk ? "OK" : "FAIL", batteryPct);
 
   if (!sdOk) {
+#if VS_STICK
+    drawHeader("");
+    centeredText(110, "Opslag FOUT", C_RED, 2);
+#else
     drawHeader("MICROSD FOUT");
     centeredText(110, "Plaats FAT32 microSD en reset", C_RED, 2);
+#endif
   } else {
     render(true);
   }

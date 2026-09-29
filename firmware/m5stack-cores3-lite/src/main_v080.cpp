@@ -35,6 +35,7 @@
 #include <Update.h>
 #include <ArduinoJson.h>
 #include <esp_ota_ops.h>
+#include "board.h"              // StickS3: `SD` becomes the flash file system
 #include "firmware_version.h"
 #include "fleet_log.h"
 #define Serial vsLogSerial
@@ -148,7 +149,12 @@ static constexpr uint32_t VS080_PORTAL_TIMEOUT_MS = 30UL * 60UL * 1000UL;
 static bool vs080Onboarding() { return !vsFleetLinked; }
 
 static bool vs080PwrPressed() {
+#if VS_STICK
+  vsStickPollButtons();
+  return vsStickTakeA() | vsStickTakeB();
+#else
   return axp2101DirectOk && (M5.Power.Axp2101.getPekPress() & 0x02);
+#endif
 }
 
 static void vs080KeepAwake() {
@@ -160,6 +166,32 @@ static void vs080KeepAwake() {
 }
 
 static void vs080DrawPortal() {
+#if VS_STICK
+  // Portrait: the QR code on top (the phone joins by scanning it), then the
+  // same details to type by hand.
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(HEADER_H + 9, "Wifi instellen", C_NAVY, 1);
+  {
+    const String qr = vsPortalQrText();
+    M5.Display.qrcode(qr.c_str(), (SCREEN_W - 111) / 2, 32, 111, 3);
+  }
+  centeredText(152, vsPortalSsid.c_str(), C_BLUE, 1);
+  {
+    const String pw = String("ww: ") + vsPortalPass;
+    centeredText(165, pw.c_str(), C_BLUE, 1);
+  }
+  centeredText(179, "open 192.168.4.1", C_NAVY, 1);
+  {
+    char line[40];
+    snprintf(line, sizeof(line), "Netwerken %u  Tel. %d",
+             (unsigned)vsFleetNetCount, WiFi.softAPgetStationNum());
+    centeredText(193, line, C_GREY, 1);
+  }
+  if (!vs080Onboarding() && vsFleetNetCount) drawPwrHints("Knop: klaar");
+  else drawPwrHints("Daarna: Opslaan en", "herstarten (telefoon)");
+  return;
+#endif
   drawHeader("Wifi instellen");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
   const String qr = vsPortalQrText();
@@ -240,7 +272,11 @@ static void vs080ServicePortal() {
     if (vs080PwrPressed()) {
       Serial.println("FLEET: PWR ignored; first-time setup must be finished");
       vs080DrawPortal();
+#if VS_STICK
+      drawPwrHints("Eerst wifi instellen", "en opslaan");
+#else
       centeredText(196, "Eerst wifi instellen en opslaan", C_AMBER, 1);
+#endif
     }
     return;
   }
@@ -300,10 +336,15 @@ static void vs080ServicePairing() {
   if (wifiChanged) vsFleetHeartbeat();
   if (!vsFleetPending) {
     Serial.println("FLEET: linked by admin");
-    drawHeader("Koppelen");
+    drawHeader(VS_STICK ? "" : "Koppelen");
     M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+#if VS_STICK
+    centeredText(100, "Gekoppeld", C_GREEN, 2);
+    stickWrapped(126, "Opnames worden nu verzonden", C_GREY, 1, 2);
+#else
     centeredText(104, "Gekoppeld", C_GREEN, 3);
     centeredText(146, "Opnames worden nu verzonden", C_GREY, 1);
+#endif
     delay(2500);
     // Back into the running sync: stage IDLE with Wi-Fi still connected makes
     // the v0.6.7 engine start the upload queue on the next loop.
@@ -395,7 +436,41 @@ static Rect vs080ResetButton(uint8_t slot) {
   return Rect{16 + slot * 98, 146, 92, 56};
 }
 
+#if VS_STICK
+// StickS3: no touch, so the confirmation is four presses in a random order of
+// front (knop) and side (zij) button, shown on screen. A wrong press cancels.
+static char vs080StickResetSeq[4] = {'A', 'B', 'A', 'B'};
+static uint8_t vs080StickResetStep = 0;
+// Drawn on the first service pass: the loop that chose Reset still redraws
+// Details after the choice returns.
+static bool vs080StickResetNeedsDraw = false;
+#endif
+
 static void vs080DrawReset(const char* note = nullptr, uint16_t noteColor = C_GREY) {
+#if VS_STICK
+  drawHeader("");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(HEADER_H + 11, "Fabrieksreset", C_RED, 1);
+  int y = stickWrapped(34, "Wist wifi en koppeling. Opnames blijven.", C_NAVY, 1, 3);
+  M5.Display.fillRect(0, y + 2, SCREEN_W, 24, C_WHITE);
+  stickWrapped(y + 2, note ? note : "Druk in deze volgorde:", note ? noteColor : C_NAVY, 1, 2);
+  y = 116;                         // fixed, so a two-line note never pushes the boxes down
+  for (uint8_t i = 0; i < 4; ++i) {
+    const bool done = i < vs080StickResetStep;
+    const int yy = y + i * 21;
+    M5.Display.fillRoundRect(20, yy, SCREEN_W - 40, 19, 5, done ? C_NAVY : C_WHITE);
+    M5.Display.drawRoundRect(20, yy, SCREEN_W - 40, 19, 5, done ? C_NAVY : C_LINE);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(done ? C_WHITE : C_NAVY);
+    char label[24];
+    snprintf(label, sizeof(label), "%u. %s", (unsigned)(i + 1),
+             vs080StickResetSeq[i] == 'A' ? "voorknop" : "zijknop");
+    M5.Display.drawString(label, SCREEN_W / 2, yy + 10);
+  }
+  drawPwrHints("Andere knop:", "annuleren");
+  return;
+#endif
   drawHeader("Fabrieksreset");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
   centeredText(62, "Wist wifi en de koppeling met de server.", C_NAVY, 1);
@@ -418,6 +493,17 @@ static void vs080DrawReset(const char* note = nullptr, uint16_t noteColor = C_GR
 }
 
 static void vs080EnterReset() {
+#if VS_STICK
+  // Random, and always both buttons: a single button pressed repeatedly in a
+  // pocket can never confirm it.
+  do {
+    for (uint8_t i = 0; i < 4; ++i) vs080StickResetSeq[i] = (esp_random() & 1) ? 'A' : 'B';
+  } while (!memchr(vs080StickResetSeq, 'A', 4) || !memchr(vs080StickResetSeq, 'B', 4));
+  vs080StickResetStep = 0;
+  vs080StickResetNeedsDraw = true;
+  vsStickTakeA();
+  vsStickTakeB();   // the press that chose Reset must not count
+#endif
   // A shuffled order, never the plain 1-2-3 left to right.
   do {
     for (uint8_t i = 0; i < 3; ++i) vs080ResetOrder[i] = i + 1;
@@ -448,6 +534,33 @@ static void vs080CancelReset(const char* why) {
 }
 
 static void vs080ServiceReset() {
+#if VS_STICK
+  if (vs080StickResetNeedsDraw) {
+    vs080StickResetNeedsDraw = false;
+    vs080DrawReset();
+  }
+  if (millis() - vs080ResetStarted > 30000UL) { vs080CancelReset("Geannuleerd (tijd verstreken)"); return; }
+  vsStickPollButtons();
+  const bool a = vsStickTakeA(), b = vsStickTakeB();
+  if (!a && !b) return;
+  noteActivity();
+  const char which = a ? 'A' : 'B';
+  if ((a && b) || which != vs080StickResetSeq[vs080StickResetStep]) {
+    vs080CancelReset("Verkeerde knop - geannuleerd");
+    return;
+  }
+  ++vs080StickResetStep;
+  vs080DrawReset();
+  if (vs080StickResetStep >= 4) {
+    vs080DrawReset("Terugzetten... Brian herstart", C_NAVY);
+    vsFleetFactoryReset();
+    if (sdOk) vsLogFlushToSd();
+    Serial.flush();
+    delay(1200);
+    ESP.restart();
+  }
+  return;
+#endif
   if (vs080PwrPressed()) { vs080CancelReset("Geannuleerd"); return; }
   if (millis() - vs080ResetStarted > 30000UL) { vs080CancelReset("Geannuleerd (tijd verstreken)"); return; }
   int x = 0, y = 0, rx = 0, ry = 0;
@@ -568,9 +681,52 @@ static void vs080ServiceLogFlush() {
   vsLogFlushToSd();
 }
 
+#if VS_STICK
+// The StickS3 records into ~4 MB of flash. A recording that would fill it is
+// stopped and saved properly a minute before the flash is full, never cut off
+// by a failing write. Checked every 10 s while recording.
+static void vs080StickServiceStorage() {
+  static uint32_t last = 0;
+  if (state != AppState::RECORDING || !sessionOpen) return;
+  if (millis() - last < 10000UL) return;
+  last = millis();
+  const uint32_t minutes = vsStickMinutesLeft(true);
+  if (minutes >= 1) return;
+  Serial.println("STICK: flash almost full; stopping and saving the recording");
+  if (quickModeChoiceActive) commitQuickRecordingMode();
+  vsStickStoppedForSpace = true;
+  noteActivity();
+  stopSession();
+}
+#endif
+
+#if VS_STICK
+// The "nog te verzenden" count on HOME. Counting walks the recordings folder,
+// so it is done once, a moment after HOME is reached from anything that can
+// change it (a recording, a sync, an error), and never while a button gesture
+// could be under way.
+static void vs080StickServicePendingCount() {
+  static AppState previous = AppState::HOME;
+  const bool arrived = state == AppState::HOME && previous != AppState::HOME;
+  const bool fromMenus = previous == AppState::MENU || previous == AppState::STATUS ||
+                         previous == AppState::DETAILS;
+  if (arrived && !fromMenus) vsStickPendingInvalidate();
+  previous = state;
+  if (state != AppState::HOME || vsStickPendingCache >= 0) return;
+  if ((int32_t)(millis() - vsStickPendingDueAt) < 0) return;
+  if (captureRunning || sessionOpen || vsServerSyncRunning || pwrClickPendingV03) return;
+  vsStickPendingCache = (int32_t)pendingCountUi();
+  screenDirty = true;
+}
+#endif
+
 void loop() {
   vs080LoopState = state;
   vs080ServiceLogFlush();
+#if VS_STICK
+  vs080StickServiceStorage();
+  vs080StickServicePendingCount();
+#endif
   switch (vs080Mode) {
     case Vs080Mode::PORTAL:
       vs080ServicePortal();
