@@ -617,6 +617,7 @@ static void vsUsbHandleCommand(String line) {
     // Do not tear down Wi-Fi here. USB sync does not use the ESP32 network
     // stack, and changing Wi-Fi mode during the USB handover adds an unrelated
     // subsystem transition exactly when the PC expects a stable CDC channel.
+    noteActivity();
     vsUsbDraw("PC VERBONDEN", "USB protocol v1");
 
     const String tokenB64 = vsBase64(
@@ -706,7 +707,9 @@ static void vsUsbHandleCommand(String line) {
         strtoul(rest.substring(s1 + 1, s2).c_str(), nullptr, 10));
     const uint32_t length = static_cast<uint32_t>(
         strtoul(rest.substring(s2 + 1).c_str(), nullptr, 10));
+    noteActivity();
     vsUsbReadSpeech(path, offset, length);
+    noteActivity();
     return;
   }
 
@@ -721,7 +724,9 @@ static void vsUsbHandleCommand(String line) {
     const String path = rest.substring(0, s1);
     const uint32_t offset = static_cast<uint32_t>(strtoul(rest.substring(s1 + 1, s2).c_str(), nullptr, 10));
     const uint32_t length = static_cast<uint32_t>(strtoul(rest.substring(s2 + 1).c_str(), nullptr, 10));
+    noteActivity();
     vsUsbReadFile(path, offset, length);
+    noteActivity();
     return;
   }
 
@@ -1360,6 +1365,7 @@ static void vs067ServiceServerSync() {
   WiFi.setSleep(true);
   Serial.println("SERVER: v0.6.7 sync ended; WiFi power-save ON");
   vsServerSyncRunning = false;
+  noteActivity(); // Give DONE/ERROR a fresh readable interval after a long transfer.
   // The final DONE/ERROR frame may have been drawn while the busy lock was
   // still true. Redraw once unlocked so the user sees the real result actions.
   vsDrawServerSync(true);
@@ -1385,6 +1391,9 @@ void loop() {
   // file reads cannot be polluted by debug output.
   if (vsUsbSyncService()) {
     vsSuspendChargeAutoSync();
+    // In USB maintenance PWR only wakes the screen; never run recorder actions.
+    if (axp2101DirectOk && (M5.Power.Axp2101.getPekPress() & 0x02)) noteActivity();
+    serviceDisplayPower();
     delay(1);
     return;
   }

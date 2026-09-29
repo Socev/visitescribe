@@ -23,7 +23,6 @@ static void vsChargeLog(const char* event) {
 static void vsChargeCancelled() { vsChargeLog("cancelled"); }
 static void vsSuspendChargeAutoSync() {
   vsChargeDetector.suspend();
-  chargeRiseBeingConfirmed = false;
   // USB maintenance owns Serial and the UI; EXIT restores HOME.
   chargeSyncStartedMs = 0;
 }
@@ -50,17 +49,14 @@ static void vsServiceChargeAutoSync() {
 #ifdef VISITESCRIBE_DIRECT_OPUS
   eligible = eligible && vsDoWorkerDone;
 #endif
-  if (!eligible) chargeRiseBeingConfirmed = false;
   if (now - vsChargeLastSample < 1000) return;
   vsChargeLastSample = now;
   const auto event = vsChargeDetector.sample(now, M5.Power.getBatteryVoltage(),
       eligible, (int)displayPower, M5.Power.getVBUSVoltage() >= 4000);
-  chargeRiseBeingConfirmed = eligible && vsChargeDetector.candidate;
   if (event == VsChargeDetector::NONE) return;
   vsChargeFromUsb = event == VsChargeDetector::USB_POWER;
   vsChargeLog("countdown");
   vsChargeCancelHook = vsChargeCancelled;
-  chargeRiseBeingConfirmed = false;
   noteActivity();
   state = AppState::CHARGE_SYNC;
   chargeSyncStartedMs = millis(); vsChargeLastSecond = 0;

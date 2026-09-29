@@ -486,10 +486,19 @@ After a stable display-load baseline, a rise of at least 25 mV must persist for
 or PWR. A USB power attachment observed while idle uses the same countdown;
 booting already connected to USB does not trigger it. Recording, network work,
 USB maintenance and POWERPROBE suspend detection. Display load changes reset
-the baseline; a candidate temporarily holds the existing display brightness,
-bounded to 30 seconds. Cancellation/starting latches detection until a sustained
+the baseline, including any pending voltage-rise confirmation. Cancellation/starting latches detection until a sustained
 25 mV fall, or USB removal. Milestones are stored in charge_sync_log.csv.
 This is an indication, not proof of charging: full batteries, placement during
 recording or baseline collection, and small rises may be missed; unobserved
 load changes may cause false positives. Manual SYNC remains available.
 Official schematic: https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/531/M5GO3.pdf
+
+
+Display timeout (2026-09-29): every idle screen, including Wi-Fi failure,
+server errors, saving, charging countdown and USB maintenance, dims after 15s
+and sleeps after 30s. Recording/paused keeps its existing 10s/30s timing.
+Only active server work holds the screen awake; USB file reads wake it and
+refresh the deadline. New app screens, Wi-Fi results and server transfer
+completion receive a fresh readable interval; ordinary redraws do not.
+PWR on a sleeping screen remains wake-only. Voltage confirmation never delays
+display sleep and restarts its baseline after a display load transition.

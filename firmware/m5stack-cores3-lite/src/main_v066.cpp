@@ -1777,6 +1777,7 @@ static void vsServiceServerSync() {
   WiFi.setSleep(true);
   Serial.println("SERVER: sync queue ended; WiFi power-save ON");
   vsServerSyncRunning = false;
+  noteActivity(); // Give DONE/ERROR a fresh readable interval after a long transfer.
 }
 
 void setup() {

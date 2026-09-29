@@ -111,7 +111,6 @@ static bool (*vsSyncRetryAllowedHook)() = nullptr;
 static bool (*vsSyncDoneHook)() = nullptr;
 static void (*vsChargeCancelHook)() = nullptr;
 static uint32_t chargeSyncStartedMs = 0;
-static bool chargeRiseBeingConfirmed = false;
 static constexpr uint32_t CHARGE_SYNC_DELAY_MS = 10000;
 
 
@@ -1619,35 +1618,25 @@ void serviceInputs() {
 }
 
 void serviceDisplayPower() {
-  // Sync is intentionally always visible. A user looking at upload progress
-  // must never need to wake the display just to discover whether it finished.
-  if (state == AppState::SYNC || state == AppState::CHARGE_SYNC) return;
-  // Freeze an already-observed rise at its current display load for confirmation.
-  if (chargeRiseBeingConfirmed) return;
+  // A new screen/result gets a readable interval, but redraws do not extend it.
+  static AppState previousState = state;
+  static SyncPhase previousSyncPhase = syncPhase;
+  if (state != previousState ||
+      (state == AppState::SYNC && syncPhase != previousSyncPhase)) {
+    noteActivity();
+  }
+  previousState = state;
+  previousSyncPhase = syncPhase;
 
-  // Keep the entire ten-second type chooser awake and touchable.
-  if (quickModeChoiceActive) return;
-
-  // SAVING and blocking errors stay readable while the local result is being
-  // established. FINISHED auto-navigates before its normal dim timeout.
-  if (state == AppState::SAVING || state == AppState::ERROR) return;
-
+  // Only an actual server operation holds the display awake, not the SYNC page.
+  if (state == AppState::SYNC && vsSyncTouchLockedHook && vsSyncTouchLockedHook()) {
+    noteActivity();
+    return;
+  }
   const uint32_t idle = millis() - lastUserActivityMs;
-  const bool recording =
-      state == AppState::RECORDING || state == AppState::PAUSED;
-  const bool menuLike =
-      state == AppState::MENU ||
-      state == AppState::STATUS ||
-      state == AppState::DETAILS;
-  const bool homeLike =
-      state == AppState::HOME || state == AppState::FINISHED;
-
-  // Validated starting values from the UX brief, with the user's explicit
-  // correction that recording must not dim/go dark after only a few seconds.
-  const uint32_t dimMs = recording ? 10000UL :
-      (menuLike ? 15000UL : (homeLike ? 15000UL : 15000UL));
-  const uint32_t offMs = recording ? 30000UL :
-      (menuLike ? 30000UL : (homeLike ? 30000UL : 30000UL));
+  const bool recording = state == AppState::RECORDING || state == AppState::PAUSED;
+  const uint32_t dimMs = recording ? 10000UL : 15000UL;
+  const uint32_t offMs = 30000UL;
 
   if (idle >= offMs && displayPower != DisplayPower::OFF) {
     M5.Display.sleep();
