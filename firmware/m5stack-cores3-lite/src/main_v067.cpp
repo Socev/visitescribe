@@ -1373,10 +1373,51 @@ static void vs067ServiceServerSync() {
 
 #include "charge_autosync.h"
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+static uint32_t vsRecoveryUiStarted = 0, vsRecoveryUiPainted = 0;
+static const char* vsRecoveryUiPhase = "Opslag controleren";
+static void vsRecoveryUiPoll() {
+  // AXP latches PWR edges while setup blocks. Consume them here, never replay.
+  if (axp2101DirectOk && (M5.Power.Axp2101.getPekPress() & 0x02)) noteActivity();
+  serviceDisplayPower();
+  const uint32_t now = millis();
+  if (now - vsRecoveryUiPainted < 250) return;
+  vsRecoveryUiPainted = now;
+  M5.Display.fillRect(0, 118, SCREEN_W, 64, C_WHITE);
+  centeredText(130, vsRecoveryUiPhase, C_GREY, 1);
+  char elapsed[40]; snprintf(elapsed, sizeof(elapsed), "%lu seconden", (unsigned long)((now-vsRecoveryUiStarted)/1000));
+  centeredText(160, elapsed, C_GREY, 1);
+}
+static void vsRecoveryUiProgress(const char* phase) {
+  vsRecoveryUiPhase = phase;
+  vsRecoveryUiPoll();
+}
+static void vsBootRecover() {
+  noteActivity();
+  vsRecoveryUiStarted = millis(); vsRecoveryUiPainted = 0;
+  drawHeader("Opstarten");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H-HEADER_H, C_WHITE);
+  centeredText(78, "Opnames controleren", C_NAVY, 2);
+  centeredText(103, "Herstellen indien nodig - even wachten", C_GREY, 1);
+  vsSessionScanProgressHook = vsRecoveryUiPoll;
+  vsDoRecoveryProgressHook = vsRecoveryUiProgress;
+  vsDoRecoverActiveSessions();
+  vsSessionScanProgressHook = nullptr;
+  vsDoRecoveryProgressHook = nullptr;
+  if (axp2101DirectOk) M5.Power.Axp2101.getPekPress();
+  pwrClickPendingV03 = false; pwrFirstClickMsV03 = 0;
+  pwrWakeGuardUntilV03 = millis() + PWR_DOUBLE_CLICK_MS;
+  quickTouchArmedV03 = false;
+  Serial.printf("RECOVERY: boot check finished in %lums recovered=%lu\n",
+      (unsigned long)(millis()-vsRecoveryUiStarted), (unsigned long)vsDoRecoveredOnBoot);
+  noteActivity(); screenDirty = true; render(true);
+}
+#endif
+
 void setup() {
   setup_v066_base();
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  if (sdOk) { vsDoRecoverActiveSessions(); screenDirty = true; }
+  if (sdOk) vsBootRecover();
 #endif
   if (!vs067EnsureScratch()) {
     Serial.println("SERVER: WARNING v0.6.7 large-read scratch unavailable");

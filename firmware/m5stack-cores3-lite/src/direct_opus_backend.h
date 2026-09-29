@@ -926,29 +926,26 @@ static uint32_t vsDirectOpusDroppedFrames() {
 
 // Explicit user-requested false-start cleanup. This is only called after the
 // encoder worker has stopped, so no task or File handle can still reference
-// the session. Every file with this exact session prefix is removed; unrelated
-// recordings are untouched.
+// the session. Only the known files of the current session are removed;
+// unrelated recordings are untouched.
 static bool vsDirectOpusDiscardSession(uint16_t discardSessionId) {
   char prefixBuf[16];
   snprintf(prefixBuf, sizeof(prefixBuf), "s%05u", discardSessionId);
   const String prefix(prefixBuf);
 
+  // Only the just-recorded session is eligible. Its exact chunk range is known;
+  // scanning every historical recording made a short false start take seconds.
+  if (!vsDoWorkerDone || captureRunning || discardSessionId != vsDoSeenSessionId) return false;
+  const String base = String("/visitescribe/") + prefix;
+  if (SD.exists(base + "_sync.txt") || SD.exists(base + "_recovered.txt")) return false;
   std::vector<String> removePaths;
-  File dir = SD.open("/visitescribe");
-  if (!dir) return false;
-
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    if (!f.isDirectory()) {
-      String name = f.name() ? String(f.name()) : String();
-      const int slash = name.lastIndexOf('/');
-      const String base = slash >= 0 ? name.substring(slash + 1) : name;
-      if (base.startsWith(prefix + "_")) {
-        removePaths.push_back(String("/visitescribe/") + base);
-      }
-    }
-    f.close();
+  for (uint32_t seq = 1; seq <= vsDoChunkSequence; ++seq) {
+    char suffix[40]; snprintf(suffix, sizeof(suffix), "_chunk_%06lu.opus", (unsigned long)seq);
+    removePaths.push_back(base + suffix);
+    removePaths.push_back(base + suffix + ".tmp");
   }
-  dir.close();
+  for (const char* suffix : {"_opus.csv", "_failure.txt"})
+    removePaths.push_back(base + suffix);
 
   bool ok = true;
   if (!vsDirectOpusLockSd(pdMS_TO_TICKS(3000))) return false;
@@ -960,6 +957,10 @@ static bool vsDirectOpusDiscardSession(uint16_t discardSessionId) {
       Serial.printf("DIRECT OPUS: false-start removed %s\n", path.c_str());
     }
   }
+  // Keep the active journal if any deletion failed, so recovery can retry.
+  if (ok && SD.exists(base + "_active.txt")) ok = SD.remove(base + "_active.txt");
+  // The event file reserves the session ID until all audio/journal deletion succeeds.
+  if (ok && SD.exists(base + "_events.csv")) ok = SD.remove(base + "_events.csv");
   vsDirectOpusUnlockSd();
   return ok;
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include "sync_directory.h"
 // Recovery runs only while capture/worker are stopped. Originals are preserved.
+static void (*vsDoRecoveryProgressHook)(const char*) = nullptr;
 static uint32_t vsDoRecoveredOnBoot = 0;
 static uint8_t vsDoRecoveryPage[8192];
 
@@ -21,6 +22,7 @@ static VsDoOggScan vsDoScanOgg(const String& path) {
   uint32_t sequence = 0, serial = 0;
   uint16_t preSkip = 0;
   while (f.available()) {
+    if (vsDoRecoveryProgressHook) vsDoRecoveryProgressHook("Audio controleren");
     const uint32_t offset = f.position();
     uint8_t* page = vsDoRecoveryPage;
     if (f.read(page, 27) != 27 || memcmp(page, "OggS", 4) || page[4] != 0) break;
@@ -72,6 +74,7 @@ static bool vsDoSalvageTmp(const String& tmp, const String& finalPath) {
   uint32_t copied = 0;
   bool ok = true;
   while (copied < scan.lastPage) {
+    if (vsDoRecoveryProgressHook) vsDoRecoveryProgressHook("Audio herstellen");
     const size_t n = std::min(size_t(1024), size_t(scan.lastPage - copied));
     if (input.read(vsDoRecoveryPage, n) != n || output.write(vsDoRecoveryPage, n) != n) { ok = false; break; }
     copied += n;
@@ -94,23 +97,22 @@ static bool vsDoValidPrefix(const String& prefix) {
   return true;
 }
 
-static bool vsDoRecoverSession(const String& prefix) {
+static bool vsDoRecoverSession(const String& prefix, const std::vector<String>* snapshot = nullptr) {
   if (!vsDoWorkerDone || captureRunning || !vsDoValidPrefix(prefix)) return false;
   const String base = String("/visitescribe/") + prefix;
   if (SD.exists(base + "_recovered.txt")) return true;
   // A sync UUID may already have an authenticated manifest. Never rewrite it.
   if (SD.exists(base + "_sync.txt") || !SD.exists(base + "_events.csv")) return false;
-  std::vector<String> files;
-  File dir = SD.open("/visitescribe");
-  if (!dir) return false;
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-    String name = f.name();
-    name = name.substring(name.lastIndexOf('/') + 1);
-    if (name.startsWith(prefix + "_chunk_") &&
-        (name.endsWith(".opus") || name.endsWith(".opus.tmp"))) files.push_back(String("/visitescribe/") + name);
-    f.close();
+  std::vector<String> files, ownedFiles;
+  if (!snapshot) {
+    if (!vsReadSessionDirectory(ownedFiles)) return false;
+    snapshot = &ownedFiles;
   }
-  dir.close();
+  for (const auto& name : *snapshot) {
+    if (name.startsWith(prefix + "_chunk_") &&
+        (name.endsWith(".opus") || name.endsWith(".opus.tmp")))
+      files.push_back(String("/visitescribe/") + name);
+  }
   for (const auto& path : files) {
     if (path.endsWith(".tmp")) {
       const String finalPath = path.substring(0, path.length() - 4);
@@ -195,7 +197,8 @@ static void vsDoRecoverActiveSessions(const std::vector<String>* snapshot = null
   }
   for (const auto& name : *snapshot) {
     if (name == name.substring(0, 6) + "_active.txt" && vsDoValidPrefix(name.substring(0, 6))) {
-      vsDoRecoverSession(name.substring(0, 6));
+      if (vsDoRecoveryProgressHook) vsDoRecoveryProgressHook("Onderbroken opname herstellen");
+      vsDoRecoverSession(name.substring(0, 6), snapshot);
     }
   }
 }

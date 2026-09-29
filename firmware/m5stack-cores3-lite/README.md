@@ -502,3 +502,15 @@ refresh the deadline. New app screens, Wi-Fi results and server transfer
 completion receive a fresh readable interval; ordinary redraws do not.
 PWR on a sleeping screen remains wake-only. Voltage confirmation never delays
 display sleep and restarts its baseline after a display load transition.
+
+
+Reset recovery UI (2026-09-29): boot displays storage checking/recovery with
+elapsed seconds before returning to HOME. PWR during this blocking operation
+only wakes the display and is consumed; the pending gesture is cleared before
+HOME. Recovery shares one directory snapshot across interrupted sessions,
+retaining full Ogg CRC validation and original interrupted files. A short false
+start deletes only known current-session files/chunk numbers, with no directory
+walk. The worker must be stopped and synced/recovered sessions are rejected;
+the events file is removed last to reserve the session ID on deletion failure.
+Boot duration is logged as RECOVERY: boot check finished. SD enumeration and
+CRC validation still take time; the UI makes this work visible, not instantaneous.
