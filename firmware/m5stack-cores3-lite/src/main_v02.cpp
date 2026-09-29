@@ -6,6 +6,8 @@
 #include <esp_system.h>
 #include "brian_ourmind_logo.h"
 
+// v0.8 (main_v080.cpp) supplies Wi-Fi from NVS and defines these itself.
+#ifndef VISITESCRIBE_WIFI_CONFIGURED
 #if __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"
 #define VISITESCRIBE_WIFI_CONFIGURED 1
@@ -15,6 +17,7 @@
 #define VISITESCRIBE_WIFI_PASSWORD_1 ""
 #define VISITESCRIBE_WIFI_SSID_2 ""
 #define VISITESCRIBE_WIFI_PASSWORD_2 ""
+#endif
 #endif
 
 // VisiteScribe CoreS3-Lite v0.2
@@ -110,6 +113,13 @@ static uint32_t (*vsPendingCountHook)() = nullptr;
 static bool (*vsSyncRetryAllowedHook)() = nullptr;
 static bool (*vsSyncDoneHook)() = nullptr;
 static void (*vsChargeCancelHook)() = nullptr;
+// v0.8 fleet hooks. All optional; unset they leave the behaviour unchanged.
+// vsBeforeWifiHook runs when a sync starts and returns false when no Wi-Fi
+// network is known at all. vsDetailsAction* adds one button to Details.
+static bool (*vsBeforeWifiHook)() = nullptr;
+static void (*vsDetailsActionHook)() = nullptr;
+static const char* vsDetailsActionLabel = nullptr;
+static const char* (*vsDetailsInfoHook)() = nullptr;
 static uint32_t chargeSyncStartedMs = 0;
 static constexpr uint32_t CHARGE_SYNC_DELAY_MS = 10000;
 
@@ -675,30 +685,40 @@ static void drawDetails() {
   drawHeader("Details");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
 
+  // With an extra action button (v0.8: "Wifi instellen") the lines move up
+  // and tighten so the button fits above Terug.
+  const bool action = vsDetailsActionHook && vsDetailsActionLabel;
+  const int y0 = action ? 52 : 59;
+  const int dy = action ? 15 : 20;
   char line[80];
-  centeredText(59, sdOk ? "microSD: OK" : "microSD: FOUT",
+  centeredText(y0, sdOk ? "microSD: OK" : "microSD: FOUT",
                sdOk ? C_NAVY : C_RED, 1);
-  centeredText(79, touchOk ? "Touch: FT6336 OK" : "Touch: FOUT",
+  centeredText(y0 + dy, touchOk ? "Touch: FT6336 OK" : "Touch: FOUT",
                touchOk ? C_GREY : C_RED, 1);
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  centeredText(99, audioError ? "Audio: FOUT" : "Audio: 16k mono Opus",
+  centeredText(y0 + 2 * dy, audioError ? "Audio: FOUT" : "Audio: 16k mono Opus",
                audioError ? C_RED : C_GREY, 1);
 #else
-  centeredText(99, audioError ? "Audio: FOUT" : "Audio: 48k stereo WAV",
+  centeredText(y0 + 2 * dy, audioError ? "Audio: FOUT" : "Audio: 48k stereo WAV",
                audioError ? C_RED : C_GREY, 1);
 #endif
-  snprintf(line, sizeof(line), "Board ID: %d", (int)M5.getBoard());
-  centeredText(119, line, C_GREY, 1);
+  if (vsDetailsInfoHook) {
+    centeredText(y0 + 3 * dy, vsDetailsInfoHook(), C_GREY, 1);
+  } else {
+    snprintf(line, sizeof(line), "Board ID: %d", (int)M5.getBoard());
+    centeredText(y0 + 3 * dy, line, C_GREY, 1);
+  }
 
   if (WiFi.status() == WL_CONNECTED) {
     snprintf(line, sizeof(line), "SSID: %s", WiFi.SSID().c_str());
-    centeredText(139, line, C_GREY, 1);
+    centeredText(y0 + 4 * dy, line, C_GREY, 1);
     snprintf(line, sizeof(line), "IP: %s", WiFi.localIP().toString().c_str());
-    centeredText(159, line, C_GREY, 1);
+    centeredText(y0 + 5 * dy, line, C_GREY, 1);
   } else {
-    centeredText(149, "Wifi: niet verbonden", C_GREY, 1);
+    centeredText(y0 + 4 * dy + dy / 2, "Wifi: niet verbonden", C_GREY, 1);
   }
 
+  if (action) drawTouchButton(STATUS_DETAILS, vsDetailsActionLabel);
   drawTouchButton(STATUS_BACK, "Terug");
 }
 
@@ -1477,6 +1497,11 @@ void startWifiAttempt(uint8_t index) {
 
 void beginSync() {
   state = AppState::SYNC;
+  if (vsBeforeWifiHook && !vsBeforeWifiHook()) {
+    syncPhase = SyncPhase::NO_CREDENTIALS;
+    screenDirty = true;
+    return;
+  }
 #if VISITESCRIBE_WIFI_CONFIGURED
   startWifiAttempt(0);
 #else
@@ -1559,6 +1584,8 @@ void handleTouch(int x, int y) {
         state = AppState::STATUS;
         lastUserActivityMs = millis();
         screenDirty = true;
+      } else if (vsDetailsActionHook && STATUS_DETAILS.contains(x,y)) {
+        vsDetailsActionHook();
       }
       break;
     case AppState::SYNC:

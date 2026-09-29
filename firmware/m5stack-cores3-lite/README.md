@@ -514,3 +514,117 @@ walk. The worker must be stopped and synced/recovered sessions are rejected;
 the events file is removed last to reserve the session ID on deletion failure.
 Boot duration is logged as RECOVERY: boot check finished. SD enumeration and
 CRC validation still take time; the UI makes this work visible, not instantaneous.
+
+
+## v0.8: setup hotspot, pairing and updates over the air
+
+`cores3-lite-direct-opus` now builds `src/main_v080.cpp`: the complete v0.6.4
+recorder plus a fleet layer. Recording, the Opus format, the upload engine and
+the USB/PC sync are unchanged.
+
+### What is where
+
+| File | What it does |
+|---|---|
+| `src/firmware_version.h` | the version (`VISITESCRIBE_FW_VERSION`) and the `VSFW|version=...|board=...|` marker the server reads from an uploaded image |
+| `src/fleet_store.h` | device ID, token and up to 8 Wi-Fi networks in NVS (namespace `vsfleet`); one-time migration of `server_secrets.h`/`wifi_secrets.h` |
+| `src/fleet_portal.h` | the setup hotspot and its phone page |
+| `src/fleet_link.h` | enrol, heartbeat, config, Wi-Fi changes, pairing screen, OTA install |
+| `src/main_v080.cpp` | wires it together; fleet screens take over the loop like USB maintenance does |
+
+Hook points added to older layers (all optional, unset = old behaviour):
+`vsBeforeWifiHook` in `beginSync()` (v0.2), `vsDetailsAction*`/`vsDetailsInfoHook`
+on the Details screen (v0.2), `VISITESCRIBE_WIFI_SSID_AT()`/`PROFILE_COUNT` for
+more than three networks (v0.5), `vsPreUploadHook`/`vsPostUploadHook` around the
+upload queue (v0.6.7). v0.6.7 now push/pops `setup`/`loop` so v0.8 can wrap it.
+
+### First start of a new Brian
+
+1. No Wi-Fi in NVS -> hotspot **Brian-XXXX** with an 8-digit password; the
+   screen shows both and a QR code. Scan it with the phone camera; the setup
+   page opens by itself (otherwise browse to `http://192.168.4.1`).
+2. Add one or more networks, then **Opslaan en herstarten**.
+3. Brian connects, enrols (`POST /v1/device/enroll`) and shows a **6-digit
+   pairing code**. Recordings stay local meanwhile.
+4. The admin enters the code under **Devices -> Nieuwe recorders** and picks the
+   user. Brian notices within ~15 s, shows **Gekoppeld** and uploads.
+
+PWR leaves the hotspot or the pairing screen; recording works without either.
+The hotspot is always reachable later via **Menu -> Apparaatstatus -> Details ->
+Wifi instellen**.
+
+### Existing Brian (already hand-registered)
+
+Flash **`cores3-lite-migrate`** once over USB on that Brian, **with your
+`server_secrets.h` and `wifi_secrets.h` still in `include/`**. The first boot
+copies the device ID, token and networks into NVS; from then on those headers
+are no longer read (removing networks later does not bring them back). Serial
+shows `FLEET: migrated compiled identity ...`. After that, flash
+`cores3-lite-direct-opus` or use updates over the air as usual.
+
+Never flash `cores3-lite-migrate` on a new Brian: it would take over the
+existing device's identity. The normal `cores3-lite-direct-opus` build copies
+only the Wi-Fi networks from `wifi_secrets.h`; the device ID of a new Brian is
+always `brian-<mac>`.
+
+### Every sync
+
+With Wi-Fi up and before any upload: heartbeat (version, battery, charger,
+SSIDs, highest Wi-Fi change applied), then config. Wi-Fi changes a user made on
+the website are applied and confirmed with a second heartbeat, after which the
+server wipes the password. Networks are tried strongest-visible first (one scan
+per sync), up to 8 networks.
+
+### Updates over the air
+
+After the upload queue, if the server set out an update, Brian installs it only
+when **not recording** and
+
+* battery **> 20 %** and on a charger (USB-C VBUS, or the Bottom3 dock via the
+  voltage-rise detector), or
+* battery **> 80 %** without a charger (the dock detector is unreliable on a
+  nearly full battery).
+
+The server may raise these thresholds, never lower them below 20 %. Otherwise
+Brian reports `deferred` and tries again at the next sync (typically the next
+time it sits on the charger).
+
+Install: stream into the inactive OTA slot while hashing, compare size and
+SHA-256, only then `Update.end()` makes it bootable, report `installing`,
+restart. The new image boots **pending verify** (`verifyRollbackLater()`
+returns true) and immediately syncs; the first successful heartbeat confirms it.
+If it never reaches the server and restarts, the bootloader returns to the
+previous image by itself (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` is set in the
+Arduino-ESP32 2.0.x bootloader). The server marks the update installed only
+when a heartbeat reports the new version. A rollback is reported to the server
+as `failed` at the next contact, so the same image is not offered in a loop
+(at most `VS_OTA_MAX_ATTEMPTS`). No second update is installed while the
+running image is still unconfirmed, and the dock counts as a charger only for
+a sync that the charge auto-sync started.
+
+### Building an update
+
+1. Bump `VISITESCRIBE_FW_VERSION` in `src/firmware_version.h`.
+2. `py -m platformio run -d firmware\m5stack-cores3-lite -e cores3-lite-release`
+3. Upload `firmware\m5stack-cores3-lite\.pio\build\cores3-lite-release\firmware.bin`
+   in the admin interface under **Firmware**, set it out for one Brian first.
+
+`cores3-lite-release` is `cores3-lite-direct-opus` with
+`-DVISITESCRIBE_RELEASE_BUILD`: it never contains compiled-in secrets, even
+if the headers are present, so one image fits every Brian.
+
+### Host test
+
+```powershell
+g++ -std=c++17 -I tests/fleet_stubs tests/fleet_store_host.cpp -o fleet_store_host; ./fleet_store_host
+```
+
+covers migration, new identities, the network list and the connection order
+(visible networks first, strongest first, then the rest).
+
+### Not verified on hardware yet
+
+Compiled for `cores3-lite-direct-opus`, `cores3-lite-release` and
+`cores3-lite-demo`; the server side is covered by its test suite. The hotspot,
+QR scan, captive-portal redirect on iOS/Android, and a real OTA + rollback have
+not yet run on a CoreS3-Lite.

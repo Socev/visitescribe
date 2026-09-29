@@ -98,3 +98,20 @@ The Pi uses exponential backoff from 30 seconds up to one hour with jitter. All 
 ## Local deletion
 
 The implementation supports automatic deletion of encrypted audio after confirmed ingest, but v0.2 ships with this deliberately set to `false` in `config.json`. Enable only after the server's durable-ingest and backup behavior has been tested.
+
+## Fleet endpoints (Brian firmware v0.8, server 1.9.0)
+
+Used by the CoreS3-Lite firmware from v0.8. The authoritative description,
+with request/response examples, is `docs/RECORDER.md` in the
+`visitescribe_api` repository ("Joining, Wi-Fi and updates over the air").
+
+| Method | Path | When the recorder calls it |
+|---|---|---|
+| `POST` | `/v1/device/enroll` | no token in NVS yet; returns the token once and a pairing code |
+| `POST` | `/v1/device/heartbeat` | every sync: version, battery, charger, SSIDs (never passwords), highest Wi-Fi op applied |
+| `GET` | `/v1/device/config` | every sync: enrolment state + pairing code, queued Wi-Fi ops, firmware update |
+| `GET` | `/v1/device/firmware/{release_id}` | downloading an update that was set out for this device |
+| `POST` | `/v1/device/firmware/report` | `deferred` / `installing` / `failed` |
+
+A recorder that is enrolled but not yet linked by an admin gets
+`403 DEVICE_PENDING` on every upload and keeps its recordings.

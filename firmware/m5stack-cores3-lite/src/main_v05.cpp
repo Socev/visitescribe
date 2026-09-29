@@ -65,7 +65,15 @@ static bool applySpeechMicProfile() {
   return ok;
 }
 
+// v0.8 supplies a longer, NVS-backed list through VISITESCRIBE_WIFI_SSID_AT().
+#ifndef VISITESCRIBE_WIFI_PROFILE_COUNT
+#define VISITESCRIBE_WIFI_PROFILE_COUNT 3
+#endif
+
 static const char* wifiSsidV05(uint8_t index) {
+#ifdef VISITESCRIBE_WIFI_SSID_AT
+  return VISITESCRIBE_WIFI_SSID_AT(index);
+#endif
   switch (index) {
     case 0: return VISITESCRIBE_WIFI_SSID_1;
     case 1: return VISITESCRIBE_WIFI_SSID_2;
@@ -75,6 +83,9 @@ static const char* wifiSsidV05(uint8_t index) {
 }
 
 static const char* wifiPasswordV05(uint8_t index) {
+#ifdef VISITESCRIBE_WIFI_PASS_AT
+  return VISITESCRIBE_WIFI_PASS_AT(index);
+#endif
   switch (index) {
     case 0: return VISITESCRIBE_WIFI_PASSWORD_1;
     case 1: return VISITESCRIBE_WIFI_PASSWORD_2;
@@ -89,7 +100,7 @@ static bool wifiProfileConfiguredV05(uint8_t index) {
 }
 
 static int nextWifiProfileV05(uint8_t startIndex) {
-  for (uint8_t i = startIndex; i < 3; ++i) {
+  for (uint8_t i = startIndex; i < VISITESCRIBE_WIFI_PROFILE_COUNT; ++i) {
     if (wifiProfileConfiguredV05(i)) return i;
   }
   return -1;

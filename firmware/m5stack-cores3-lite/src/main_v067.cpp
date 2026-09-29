@@ -8,11 +8,25 @@
 // - leaves recording format, manifests, crypto identity, resume semantics and
 //   the original 48 kHz stereo WAV masters unchanged.
 
+// push/pop so an outer layer (v0.8) can rename this file's setup()/loop() too.
+#pragma push_macro("setup")
+#pragma push_macro("loop")
+#undef setup
+#undef loop
 #define setup setup_v066_base
 #define loop loop_v066_base
 #include "main_v066.cpp"
 #undef setup
 #undef loop
+#pragma pop_macro("loop")
+#pragma pop_macro("setup")
+
+// v0.8 fleet hooks around the upload queue (unset = unchanged behaviour).
+// vsPreUploadHook runs with Wi-Fi up, before any recording is uploaded; false
+// skips the uploads (e.g. the device still waits to be linked).
+// vsPostUploadHook runs after the queue, e.g. to install a firmware update.
+static bool (*vsPreUploadHook)() = nullptr;
+static void (*vsPostUploadHook)() = nullptr;
 
 #include <esp32-hal-psram.h>
 #include "sync_result_timer.h"
@@ -1360,8 +1374,9 @@ static void vs067ServiceServerSync() {
   WiFi.setSleep(false);
   delay(20);
   Serial.println("SERVER: starting v0.6.7 sync; WiFi power-save OFF; persistent HTTP/TLS");
-  vs067SyncAllPending();
+  if (!vsPreUploadHook || vsPreUploadHook()) vs067SyncAllPending();
   vsReleaseChunkBuffers();
+  if (vsPostUploadHook) vsPostUploadHook();
   WiFi.setSleep(true);
   Serial.println("SERVER: v0.6.7 sync ended; WiFi power-save ON");
   vsServerSyncRunning = false;
