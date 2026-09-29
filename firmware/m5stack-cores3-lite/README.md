@@ -396,6 +396,9 @@ queue high-water mark was 45/512 frames across the first three rotations.
 
 ## Confirmed-sync retention and progress
 
+> **Replaced in v0.10:** confirmed recordings are now deleted right after the
+> sync (see "v0.10" below). The 72-hour text here describes 0.6.x–0.9.x.
+
 Confirmed (`ingested`) sessions are eligible for removal after 72 full hours.
 A separate `_synced_at.txt` records the first confirmation time and matching
 session UUID. Repeated confirmations do not move that deadline. All files with
@@ -662,3 +665,40 @@ masked. `Serial` is replaced by a tee for everything compiled after
 `fleet_log.h`; every call is forwarded unchanged.
 
 Host test: `g++ -std=c++17 -I tests/log_stubs tests/fleet_log_host.cpp`.
+
+## v0.10: delete after sync, action markers
+
+**Successful sync = delete.** As soon as the server confirms a recording
+(`_sync.txt` says `state=ingested`) all its files are deleted at the end of
+that sync. The 72-hour grace period of 0.6.x–0.9.x is gone. Recordings that
+are queued, failed or quarantined are never touched. Audio goes first, then
+`_events.csv`, then any old `_synced_at.txt`, and the `_sync.txt` receipt
+last, so a reset half-way never makes a recording upload twice; the next pass
+finishes the job. A USB confirmation (`VSUSB MARK`) is deleted within a minute
+when Brian is back on the home screen. The server removes its copy of the
+audio after processing too, unless the admin put the recorder in
+*diagnostische modus* (API 1.11.0).
+
+**Action markers** (`src/action_marker.h`): a small file in `/visitescribe/`
+while an action runs.
+
+| File | Written | Removed |
+|---|---|---|
+| `_busy_rec.txt` | before a recording opens its journal | when the recording is saved or discarded |
+| `_busy_sync.txt` | when a server sync starts | after the sync and its deletions |
+| `_busy_del.txt` | before confirmed recordings are deleted | when all of them are gone |
+
+At boot the slow "Opnames controleren" pass (≈30 s on a slow card) now runs
+only if `_busy_rec.txt` is there, plus once on the first start of 0.10.0
+(NVS `vsmarker/scan010`), because older firmware wrote no markers. A left-over
+sync or delete marker only schedules a deletion pass. A missing marker never
+loses anything: interrupted recordings are also recovered at the start of
+every sync, as before.
+
+Host test: `tests/retention_host.cpp` (delete rules, busy guards, six reset
+points, markers) and `tests/false_start_host.py` (marker cleared on discard).
+
+**Session numbers keep counting.** With immediate deletion "lowest free
+number" would reuse `s00001` for nearly every recording, so `findNextSessionId`
+now continues after the last number used (NVS `vsmarker/lastsid`), skips any
+number still on the card, and wraps only after 64999.

@@ -9,6 +9,7 @@ static uint32_t vsDoChunkSequence=2;
 static bool vsDirectOpusLockSd(int){return true;}
 static void vsDirectOpusUnlockSd(){}
 '''
+s+=(r/'src/action_marker.h').read_text().replace('#pragma once','')
 backend=(r/'src/direct_opus_backend.h').read_text(); s+=backend[backend.index('static bool vsDirectOpusDiscardSession('):backend.index('static void vsDoPersistFailure(')]
 s+='''
 int main(){
@@ -24,7 +25,9 @@ int main(){
  vsDoWorkerDone=false;assert(!vsDirectOpusDiscardSession(1));assert(SD.data==before);vsDoWorkerDone=true;
  SD.data[base+"_sync.txt"]="protected";assert(!vsDirectOpusDiscardSession(1));SD.data.erase(base+"_sync.txt");
  SD.failRemove=base+"_chunk_000001.opus";assert(!vsDirectOpusDiscardSession(1));assert(SD.exists(base+"_active.txt"));
+ SD.data["/visitescribe/_busy_rec.txt"]="action=rec";
  SD.failRemove="";assert(vsDirectOpusDiscardSession(1));assert(!SD.exists(base+"_active.txt"));
+ assert(!SD.exists("/visitescribe/_busy_rec.txt"));
  assert(SD.data.size()==198);assert(SD.directoryOpens==0);
  puts("false-start: current-session scope, busy/protected guard, failure/retry and zero directory scans passed");
 }

@@ -4,6 +4,7 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <esp_system.h>
+#include <Preferences.h>
 #include "brian_ourmind_logo.h"
 
 // v0.8 (main_v080.cpp) supplies Wi-Fi from NVS and defines these itself.
@@ -926,8 +927,32 @@ bool readDirectTouch(int& x, int& y) {
   return true;
 }
 
+// Since 0.10.0 a synced recording is deleted at once, so "lowest free number"
+// would hand out s00001 over and over. Numbers now keep counting from the last
+// one used (NVS vsmarker/lastsid) and only wrap after 64999; a number still
+// on the card is always skipped.
+static uint16_t vsLastSessionId() {
+  Preferences prefs;
+  uint16_t last = 0;
+  if (prefs.begin("vsmarker", true)) {
+    last = prefs.getUShort("lastsid", 0);
+    prefs.end();
+  }
+  return last < 65000 ? last : 0;
+}
+
+static void vsRememberSessionId(uint16_t id) {
+  Preferences prefs;
+  if (prefs.begin("vsmarker", false)) {
+    prefs.putUShort("lastsid", id);
+    prefs.end();
+  }
+}
+
 uint16_t findNextSessionId() {
-  for (uint16_t i = 1; i < 65000; ++i) {
+  const uint16_t start = vsLastSessionId();
+  for (uint32_t n = 1; n < 65000; ++n) {
+    const uint16_t i = (uint16_t)(((start + n - 1) % 64999) + 1);
     char p[64];
     snprintf(p, sizeof(p), "/visitescribe/s%05u_events.csv", i);
     if (!SD.exists(p)) {
@@ -1144,6 +1169,7 @@ bool startNewSession(Mode mode) {
 #endif
   selectedMode = mode;
   sessionId = findNextSessionId();
+  vsRememberSessionId(sessionId);
 #ifdef VISITESCRIBE_DIRECT_OPUS
   vsDirectOpusResetSession(sessionId);
 #endif

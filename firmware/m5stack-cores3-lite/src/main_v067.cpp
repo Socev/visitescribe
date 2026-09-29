@@ -1254,7 +1254,10 @@ static bool vs067SyncAllPending() {
   if (!vsReadSessionDirectory(directory)) return vsFail("Opnamemap lezen mislukt");
   Serial.printf("SERVER: shared directory pass files=%u elapsed=%lums\n",
                 (unsigned)directory.size(), (unsigned long)(millis() - directoryStarted));
-  vsRetentionCleanup(&directory);
+  // Deleting confirmed recordings changes the directory; the rest of the sync
+  // must not work from a listing that still names the deleted files.
+  if (vsRetentionCleanup(&directory) && !vsReadSessionDirectory(directory))
+    return vsFail("Opnamemap lezen mislukt");
 #ifdef VISITESCRIBE_DIRECT_OPUS
   vsDoRecoverActiveSessions(&directory);
 #endif
@@ -1374,8 +1377,15 @@ static void vs067ServiceServerSync() {
   WiFi.setSleep(false);
   delay(20);
   Serial.println("SERVER: starting v0.6.7 sync; WiFi power-save OFF; persistent HTTP/TLS");
+  vsMarkerSet("sync", "server sync");
   if (!vsPreUploadHook || vsPreUploadHook()) vs067SyncAllPending();
   vsReleaseChunkBuffers();
+  // Successful sync = delete: every recording the server confirmed goes now,
+  // not 72 hours later. Before the post hook, which may reboot into an update.
+  const uint32_t purged = vsRetentionCleanup();
+  if (purged) Serial.printf("PURGE: %lu confirmed recording(s) deleted after sync\n",
+                            (unsigned long)purged);
+  vsMarkerClear("sync");
   if (vsPostUploadHook) vsPostUploadHook();
   WiFi.setSleep(true);
   Serial.println("SERVER: v0.6.7 sync ended; WiFi power-save ON");
@@ -1429,10 +1439,52 @@ static void vsBootRecover() {
 }
 #endif
 
+#ifdef VISITESCRIBE_DIRECT_OPUS
+// The full "Opnames controleren" pass walks the whole SD card (about 30 s on a
+// slow card). Since 0.10.0 it runs only when a marker says an action was cut
+// off, plus once after installing this version (older firmware wrote none).
+static void vsBootMaybeRecover() {
+  Preferences prefs;
+  bool scanned = false;
+  if (prefs.begin("vsmarker", true)) {
+    scanned = prefs.getBool("scan010", false);
+    prefs.end();
+  }
+  if (vsMarkerExists("sync")) {
+    Serial.println("MARKER: previous sync was cut off; it resumes at the next sync");
+    vsMarkerClear("sync");
+    vsPurgeDue = true;
+  }
+  if (vsMarkerExists("del")) {
+    Serial.println("MARKER: deleting confirmed recordings was cut off; finishing it");
+    vsPurgeDue = true;
+  }
+  const bool recording = vsMarkerExists("rec");
+  if (!recording && scanned) {
+    Serial.println("RECOVERY: no unfinished recording; boot check skipped");
+    return;
+  }
+  Serial.printf("RECOVERY: full boot check (%s)\n",
+                recording ? "recording was cut off" : "first start of this version");
+  vsBootRecover();
+  // Cleared even if a session could not be recovered: some never can (no
+  // audio at all) and must not cost 30 s on every boot. Every sync start
+  // retries the recovery anyway.
+  if (!vsDoRecoveryClean)
+    Serial.println("RECOVERY: not everything recovered; retried at the next sync");
+  vsMarkerClear("rec");
+  if (!scanned && prefs.begin("vsmarker", false)) {
+    prefs.putBool("scan010", true);
+    prefs.end();
+    vsPurgeDue = true;   // clears what 0.9.x kept for 72 hours
+  }
+}
+#endif
+
 void setup() {
   setup_v066_base();
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  if (sdOk) vsBootRecover();
+  if (sdOk) vsBootMaybeRecover();
 #endif
   if (!vs067EnsureScratch()) {
     Serial.println("SERVER: WARNING v0.6.7 large-read scratch unavailable");
@@ -1461,11 +1513,17 @@ void loop() {
   vs067ServiceServerSync();
   vsServiceChargeAutoSync();
   // Never walk/delete SD files while recording, USB transfer or sync owns it.
+  // Hourly as a backstop, and soon after a USB confirmation or an interrupted
+  // delete asked for a pass (at most once a minute, so a card that refuses a
+  // delete is not hammered).
   static uint32_t lastRetentionCheck = 0;
-  if (state == AppState::HOME && !vsServerSyncRunning &&
-      millis() - lastRetentionCheck >= 3600000UL) {
+  static uint32_t purgeRetryMs = 60000UL;   // grows 1 -> 4 -> 16 -> 60 min on failure
+  const uint32_t sinceCheck = millis() - lastRetentionCheck;
+  if (state == AppState::HOME && !vsServerSyncRunning && !vsUsbSyncActive &&
+      (sinceCheck >= 3600000UL || (vsPurgeDue && sinceCheck >= purgeRetryMs))) {
     lastRetentionCheck = millis();
     vsRetentionCleanup();
+    purgeRetryMs = vsPurgeDue ? min<uint32_t>(purgeRetryMs * 4, 3600000UL) : 60000UL;
   }
 
   // Server-sync screens are redrawn explicitly on real state/progress changes.

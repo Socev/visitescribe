@@ -181,6 +181,9 @@ static bool vsDoRecoverSession(const String& prefix, const std::vector<String>* 
 
 static bool vsDoWriteActiveJournal() {
   char path[80]; snprintf(path, sizeof(path), "/visitescribe/s%05u_active.txt", vsDoSeenSessionId);
+  // Written first: if the recorder is reset from here on, the next boot runs
+  // the full recovery check. No marker, no recording (same as no journal).
+  if (!vsMarkerSet("rec", String(path).substring(14, 20))) return false;
   File f = SD.open(path, FILE_WRITE);
   if (!f) return false;
   const bool ok = f.println("direct_opus_active=1") > 0;
@@ -188,22 +191,29 @@ static bool vsDoWriteActiveJournal() {
   return ok;
 }
 
+// True only when the last pass looked at every journal and recovered them all;
+// the boot keeps its "recording was cut off" marker otherwise (0.10.0).
+static bool vsDoRecoveryClean = false;
 static void vsDoRecoverActiveSessions(const std::vector<String>* snapshot = nullptr) {
+  vsDoRecoveryClean = false;
   if (!vsDoWorkerDone || captureRunning) return;
   std::vector<String> ownedFiles;
   if (!snapshot) {
     if (!vsReadSessionDirectory(ownedFiles)) return;
     snapshot = &ownedFiles;
   }
+  bool clean = true;
   for (const auto& name : *snapshot) {
     if (name == name.substring(0, 6) + "_active.txt" && vsDoValidPrefix(name.substring(0, 6))) {
       if (vsDoRecoveryProgressHook) vsDoRecoveryProgressHook("Onderbroken opname herstellen");
-      vsDoRecoverSession(name.substring(0, 6), snapshot);
+      if (!vsDoRecoverSession(name.substring(0, 6), snapshot)) clean = false;
     }
   }
+  vsDoRecoveryClean = clean;
 }
 
 static void vsDoClearActiveJournal() {
   char path[80]; snprintf(path, sizeof(path), "/visitescribe/s%05u_active.txt", vsDoSeenSessionId);
   if (SD.exists(path)) SD.remove(path);
+  if (!SD.exists(path)) vsMarkerClear("rec");
 }

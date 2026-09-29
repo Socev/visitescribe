@@ -19,6 +19,7 @@
 
 #include <Arduino.h>
 #include <SD.h>
+#include "action_marker.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -959,6 +960,7 @@ static bool vsDirectOpusDiscardSession(uint16_t discardSessionId) {
   }
   // Keep the active journal if any deletion failed, so recovery can retry.
   if (ok && SD.exists(base + "_active.txt")) ok = SD.remove(base + "_active.txt");
+  if (ok) vsMarkerClear("rec");                 // the recording is fully gone
   // The event file reserves the session ID until all audio/journal deletion succeeds.
   if (ok && SD.exists(base + "_events.csv")) ok = SD.remove(base + "_events.csv");
   vsDirectOpusUnlockSd();
