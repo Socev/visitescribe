@@ -33,6 +33,12 @@ static VsFleetNetwork vsFleetNets[VS_FLEET_MAX_NETWORKS];
 static uint8_t vsFleetNetCount = 0;
 static uint32_t vsFleetWifiApplied = 0;
 static bool vsFleetLoaded = false;
+// Set once the server reports this Brian as linked (active). Until then the
+// first-time setup (hotspot -> enrol -> pairing) cannot be left.
+static bool vsFleetLinked = false;
+// The token held before a factory reset: proves to the server, at the next
+// enrolment, that this is the same box (see vsFleetFactoryReset).
+static String vsFleetPrevToken;
 
 // Connection order for the current sync: indexes into vsFleetNets, strongest
 // visible network first. Rebuilt by vsFleetPlanWifi() before every sync.
@@ -92,8 +98,8 @@ static bool vsFleetSaveNetworks() {
       // putString returns 0 for an empty string; an open network is valid.
       p.putString(kp, vsFleetNets[i].pass);
     } else {
-      p.remove(ks);
-      p.remove(kp);
+      if (p.isKey(ks)) p.remove(ks);
+      if (p.isKey(kp)) p.remove(kp);
     }
   }
   p.putBool("wifi_init", true);
@@ -136,13 +142,23 @@ static bool vsFleetSaveIdentity(const String& deviceId, const String& token) {
   if (!p.begin(VS_FLEET_NS, false)) return false;
   bool ok = p.putString("devid", deviceId) == deviceId.length();
   if (token.length()) ok &= p.putString("token", token) == token.length();
-  else p.remove("token");
+  else if (p.isKey("token")) p.remove("token");
   p.end();
   if (ok) {
     vsFleetIdValue = deviceId;
     vsFleetTokenValue = token;
   }
   return ok;
+}
+
+static void vsFleetSetLinked(bool linked) {
+  if (vsFleetLinked == linked) return;
+  Preferences p;
+  if (!p.begin(VS_FLEET_NS, false)) return;
+  p.putBool("linked", linked);
+  p.end();
+  vsFleetLinked = linked;
+  Serial.printf("FLEET: linked=%d\n", linked ? 1 : 0);
 }
 
 static bool vsFleetSaveWifiApplied(uint32_t applied) {
@@ -165,8 +181,8 @@ static void vsFleetSetOtaPending(const String& releaseId, const String& version 
     p.putString("ota_rel", releaseId);
     p.putString("ota_ver", version);
   } else {
-    p.remove("ota_rel");
-    p.remove("ota_ver");
+    if (p.isKey("ota_rel")) p.remove("ota_rel");
+    if (p.isKey("ota_ver")) p.remove("ota_ver");
   }
   p.end();
 }
@@ -174,8 +190,8 @@ static void vsFleetSetOtaPending(const String& releaseId, const String& version 
 static String vsFleetOtaPending(String* version = nullptr) {
   Preferences p;
   if (!p.begin(VS_FLEET_NS, true)) return String();
-  const String v = p.getString("ota_rel", "");
-  if (version) *version = p.getString("ota_ver", "");
+  const String v = p.isKey("ota_rel") ? p.getString("ota_rel", "") : String();
+  if (version) *version = p.isKey("ota_ver") ? p.getString("ota_ver", "") : String();
   p.end();
   return v;
 }
@@ -192,10 +208,12 @@ static void vsFleetBegin(const char* legacyId, const char* legacyToken,
   vsFleetLoaded = true;
   Preferences p;
   const bool open = p.begin(VS_FLEET_NS, false);
-  String id = open ? p.getString("devid", "") : String();
-  String token = open ? p.getString("token", "") : String();
+  String id = open && p.isKey("devid") ? p.getString("devid", "") : String();
+  String token = open && p.isKey("token") ? p.getString("token", "") : String();
   const bool wifiInit = open && p.getBool("wifi_init", false);
   vsFleetWifiApplied = open ? p.getUInt("wifi_done", 0) : 0;
+  vsFleetLinked = open && p.getBool("linked", false);
+  vsFleetPrevToken = open && p.isKey("prev_token") ? p.getString("prev_token", "") : String();
 
   if (!id.length()) {
     // Only a build made for that one existing Brian may adopt the compiled
@@ -206,6 +224,9 @@ static void vsFleetBegin(const char* legacyId, const char* legacyToken,
       // An existing, hand-registered Brian: keep its identity.
       id = legacyId;
       token = legacyToken;
+      // Already registered and bound by hand: no first-time setup for it.
+      if (open) p.putBool("linked", true);
+      vsFleetLinked = true;
       Serial.printf("FLEET: migrated compiled identity %s into NVS\n", id.c_str());
     } else {
       id = String("brian-") + vsFleetMacHex();
@@ -257,9 +278,21 @@ static void vsFleetBegin(const char* legacyId, const char* legacyToken,
 // Scan once and try the known networks that are actually in range, strongest
 // first. When none of them shows up (a hidden SSID, or a scan that failed),
 // fall back to trying every known network in stored order.
+static void vsFleetLogNetworks() {
+  for (uint8_t i = 0; i < vsFleetOrderCount; ++i) {
+    const VsFleetNetwork& n = vsFleetNets[vsFleetOrder[i]];
+    // Length only, never the password itself: enough to spot a typo'd entry.
+    Serial.printf("FLEET: try %u: %s (password %u chars)\n", (unsigned)(i + 1),
+                  n.ssid.c_str(), (unsigned)n.pass.length());
+  }
+}
+
 static void vsFleetPlanWifi() {
   vsFleetResetOrder();
-  if (vsFleetNetCount <= 1) return;
+  if (vsFleetNetCount <= 1) {
+    vsFleetLogNetworks();
+    return;
+  }
   if ((WiFi.getMode() & WIFI_MODE_STA) == 0) {
     WiFi.mode(WIFI_STA);
     delay(100);
@@ -267,6 +300,9 @@ static void vsFleetPlanWifi() {
   const int found = WiFi.scanNetworks(false, true);
   if (found <= 0) {
     WiFi.scanDelete();
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    vsFleetLogNetworks();
     return;
   }
   int32_t best[VS_FLEET_MAX_NETWORKS];
@@ -274,14 +310,26 @@ static void vsFleetPlanWifi() {
   for (int s = 0; s < found; ++s) {
     const String seen = WiFi.SSID(s);
     const int at = vsFleetFindNetwork(seen);
-    if (at >= 0 && WiFi.RSSI(s) > best[at]) best[at] = WiFi.RSSI(s);
+    if (at >= 0) {
+      Serial.printf("FLEET: seen %s rssi=%d dBm auth=%d ch=%d\n", seen.c_str(),
+                    (int)WiFi.RSSI(s), (int)WiFi.encryptionType(s), (int)WiFi.channel(s));
+      if (WiFi.RSSI(s) > best[at]) best[at] = WiFi.RSSI(s);
+    }
   }
   WiFi.scanDelete();
+  // Hand the radio back switched off, exactly as the connect code has always
+  // found it. Connecting straight after a scan made both networks fail with
+  // AUTH_EXPIRE on the first hardware test.
+  WiFi.mode(WIFI_OFF);
+  delay(100);
   uint8_t count = 0;
   for (uint8_t i = 0; i < vsFleetNetCount; ++i) {
     if (best[i] != INT32_MIN) vsFleetOrder[count++] = i;
   }
-  if (!count) return;   // keep the stored order
+  if (!count) {         // keep the stored order
+    vsFleetLogNetworks();
+    return;
+  }
   std::sort(vsFleetOrder, vsFleetOrder + count,
             [&](uint8_t a, uint8_t b) { return best[a] > best[b]; });
   // Networks the scan did not see (hidden SSIDs, a missed beacon) still get
@@ -294,4 +342,32 @@ static void vsFleetPlanWifi() {
   Serial.printf("FLEET: %u of %u known network(s) in range; trying %s first\n",
                 (unsigned)count, (unsigned)vsFleetNetCount,
                 vsFleetNets[vsFleetOrder[0]].ssid.c_str());
+  vsFleetLogNetworks();
+}
+
+// Factory reset from the Details screen. Wipes Wi-Fi, token, pairing state and
+// update bookkeeping. Keeps: the device ID (so the server history stays one
+// device), the old token as proof of identity for re-enrolment, and -- outside
+// this namespace -- the recording key and every recording on the SD card.
+static bool vsFleetFactoryReset() {
+  Preferences p;
+  if (!p.begin(VS_FLEET_NS, false)) return false;
+  const String id = vsFleetIdValue;
+  const String proof = vsFleetTokenValue.length() ? vsFleetTokenValue : vsFleetPrevToken;
+  const bool ok = p.clear();
+  p.putString("devid", id);
+  if (proof.length()) p.putString("prev_token", proof);
+  p.putBool("wifi_init", true);   // never re-import compiled networks
+  p.end();
+  Serial.printf("FLEET: factory reset of %s (%s)\n", id.c_str(), ok ? "ok" : "FAILED");
+  return ok;
+}
+
+static void vsFleetClearPrevToken() {
+  if (!vsFleetPrevToken.length()) return;
+  Preferences p;
+  if (!p.begin(VS_FLEET_NS, false)) return;
+  if (p.isKey("prev_token")) p.remove("prev_token");
+  p.end();
+  vsFleetPrevToken = "";
 }

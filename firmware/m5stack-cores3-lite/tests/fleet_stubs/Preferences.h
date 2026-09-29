@@ -16,5 +16,7 @@ class Preferences {
   size_t putUInt(const char* k, uint32_t v) { fakeNvs().u[k] = v; return 4; }
   bool getBool(const char* k, bool d) { auto& m = fakeNvs().u; return m.count(k) ? m[k] != 0 : d; }
   size_t putBool(const char* k, bool v) { fakeNvs().u[k] = v; return 1; }
+  bool isKey(const char* k) { return fakeNvs().s.count(k) || fakeNvs().u.count(k); }
+  bool clear() { fakeNvs() = FakeNvs(); return true; }
   bool remove(const char* k) { fakeNvs().s.erase(k); fakeNvs().u.erase(k); return true; }
 };

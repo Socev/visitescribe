@@ -94,5 +94,25 @@ int main() {
   vsFleetBegin(nullptr, nullptr, nullptr, nullptr, 0);
   assert(vsFleetWifiApplied == 17);
 
+  // 7. Factory reset: networks, token and link go; ID stays; old token kept as proof.
+  reset();
+  vsFleetBegin(nullptr, nullptr, nullptr, nullptr, 0);
+  vsFleetUpsertNetwork("Thuis", "12345678");
+  vsFleetSaveIdentity(vsFleetDeviceId(), "tok-old");
+  vsFleetSetLinked(true);
+  vsFleetSaveWifiApplied(9);
+  assert(vsFleetFactoryReset());
+  vsFleetLoaded = false;
+  vsFleetBegin("x", "y", ssids, pass, 3);            // compiled values must not come back
+  assert(String(vsFleetDeviceId()) == "brian-a1b2c3d4e5f6");
+  assert(!vsFleetHasToken() && !vsFleetHasNetworks() && !vsFleetLinked);
+  assert(vsFleetWifiApplied == 0);
+  assert(vsFleetPrevToken == "tok-old");
+  vsFleetClearPrevToken();
+  vsFleetLoaded = false;
+  vsFleetBegin(nullptr, nullptr, nullptr, nullptr, 0);
+  assert(vsFleetPrevToken == "");
+
+  puts("fleet store: factory reset keeps ID and proof, wipes the rest; ");
   puts("fleet store: migration, new identity, no resurrection, cap/replace/remove, order, op mark passed");
 }

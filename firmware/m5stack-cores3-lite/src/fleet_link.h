@@ -49,13 +49,14 @@ static constexpr int VS_OTA_BATTERY_FLOOR = 20;
 // --------------------------------------------------------------------------
 
 static int vsFleetRequest(const char* method, const String& path, const String& body,
-                          String& response) {
+                          String& response, const String& proofToken = String()) {
   HTTPClient http;
   const String url = String(VISITESCRIBE_SERVER_BASE_URL) + path;
   if (!vsBeginHttp(http, url)) {
     vsFleetLastHttp = -1;
     return -1;
   }
+  if (proofToken.length()) http.addHeader("Authorization", String("Bearer ") + proofToken);
   int code;
   if (strcmp(method, "GET") == 0) {
     code = http.GET();
@@ -178,7 +179,9 @@ static bool vsFleetEnroll() {
   String body, resp;
   serializeJson(doc, body);
   // No token yet: vsBeginHttp sends X-Device-ID only.
-  const int code = vsFleetRequest("POST", "/v1/device/enroll", body, resp);
+  // After a factory reset: the previous token proves this is the same box.
+  const int code = vsFleetRequest("POST", "/v1/device/enroll", body, resp,
+                                  vsFleetTokenValue.length() ? String() : vsFleetPrevToken);
   if (code == 201 || code == 200) {
     JsonDocument r;
     if (deserializeJson(r, resp)) {
@@ -190,6 +193,7 @@ static bool vsFleetEnroll() {
       vsFleetLastError = "Token opslaan mislukt";
       return false;
     }
+    vsFleetClearPrevToken();
     vsFleetPending = String((const char*)(r["enrolment"]["state"] | "active")) == "pending";
     vsFleetPairingCode = r["enrolment"]["pairing_code"] | "";
     Serial.printf("FLEET: enrolled as %s (%s)\n", vsFleetDeviceId(),
@@ -276,6 +280,7 @@ static bool vsFleetFetchConfig(bool& wifiChanged) {
   vsFleetPending = !enrolment.isNull() &&
                    String((const char*)(enrolment["state"] | "active")) == "pending";
   vsFleetPairingCode = enrolment["pairing_code"] | "";
+  if (!vsFleetPending) vsFleetSetLinked(true);
 
   JsonArrayConst ops = doc["wifi_ops"];
   if (!ops.isNull()) wifiChanged = vsFleetApplyWifiOps(ops);
@@ -337,7 +342,7 @@ static void vsFleetDrawPairing(const char* note = nullptr) {
   centeredText(110, shown.length() ? shown.c_str() : "------", C_BLUE, 4);
   centeredText(152, vsFleetDeviceId(), C_GREY, 1);
   centeredText(174, note ? note : "Opnames blijven bewaard tot koppeling", C_GREY, 1);
-  centeredText(214, "PWR = later koppelen", C_GREY, 1);
+  if (vsFleetLinked) centeredText(214, "PWR = later koppelen", C_GREY, 1);
 }
 
 // --------------------------------------------------------------------------

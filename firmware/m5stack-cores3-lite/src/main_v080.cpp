@@ -112,7 +112,7 @@ extern "C" bool verifyRollbackLater() { return true; }
 // ---------------------------------------------------------------------------
 // 3. Fleet modes that take over the screen and the loop.
 // ---------------------------------------------------------------------------
-enum class Vs080Mode : uint8_t { NONE, PORTAL, PAIRING };
+enum class Vs080Mode : uint8_t { NONE, PORTAL, PAIRING, RESET_CONFIRM };
 static Vs080Mode vs080Mode = Vs080Mode::NONE;
 static uint32_t vs080ModeStarted = 0;
 static uint32_t vs080LastPoll = 0;
@@ -123,6 +123,11 @@ static bool vs080NeedsDraw = false;
 static constexpr uint32_t VS080_PAIRING_POLL_MS = 15000;
 static constexpr uint32_t VS080_PAIRING_TIMEOUT_MS = 15UL * 60UL * 1000UL;
 static constexpr uint32_t VS080_PORTAL_TIMEOUT_MS = 30UL * 60UL * 1000UL;
+
+// First-time setup: from the first boot until the server reports this Brian
+// as linked, the hotspot and the pairing screen cannot be left with PWR and do
+// not time out. Afterwards (hotspot opened from Details) they can.
+static bool vs080Onboarding() { return !vsFleetLinked; }
 
 static bool vs080PwrPressed() {
   return axp2101DirectOk && (M5.Power.Axp2101.getPekPress() & 0x02);
@@ -161,7 +166,8 @@ static void vs080DrawPortal() {
            (unsigned)vsFleetNetCount, WiFi.softAPgetStationNum());
   M5.Display.drawString(line, x, 166);
   M5.Display.setTextDatum(middle_center);
-  centeredText(214, vsFleetNetCount ? "PWR = klaar" : "PWR = later instellen", C_GREY, 1);
+  if (!vs080Onboarding() && vsFleetNetCount) centeredText(214, "PWR = klaar", C_GREY, 1);
+  else centeredText(214, "Kies daarna Opslaan en herstarten", C_GREY, 1);
 }
 
 static void vs080EnterPortal() {
@@ -195,12 +201,6 @@ static void vs080LeaveToHome() {
 static void vs080ServicePortal() {
   if (vsPortalService()) {
     vsPortalStop();
-    if (!vsFleetHasNetworks()) {
-      // Restarting would only open the hotspot again; let Brian record.
-      Serial.println("FLEET: setup finished without networks; back to recorder");
-      vs080LeaveToHome();
-      return;
-    }
     Serial.println("FLEET: setup finished; restarting");
     Serial.flush();
     delay(200);
@@ -215,6 +215,15 @@ static void vs080ServicePortal() {
       vsPortalLastNets = vsFleetNetCount;
       vs080DrawPortal();
     }
+  }
+  const bool locked = vs080Onboarding() || !vsFleetHasNetworks();
+  if (locked) {
+    if (vs080PwrPressed()) {
+      Serial.println("FLEET: PWR ignored; first-time setup must be finished");
+      vs080DrawPortal();
+      centeredText(196, "Eerst wifi instellen en opslaan", C_AMBER, 1);
+    }
+    return;
   }
   const bool timeout = millis() - vs080ModeStarted >= VS080_PORTAL_TIMEOUT_MS;
   if (vs080PwrPressed() || timeout) {
@@ -243,11 +252,15 @@ static void vs080ServicePairing() {
     vsFleetDrawPairing();
   }
   if (vs080PwrPressed()) {
-    Serial.println("FLEET: pairing postponed by PWR");
-    vs080LeaveToHome();
-    return;
+    if (vs080Onboarding()) {
+      Serial.println("FLEET: PWR ignored; waiting to be linked");
+    } else {
+      Serial.println("FLEET: pairing postponed by PWR");
+      vs080LeaveToHome();
+      return;
+    }
   }
-  if (millis() - vs080ModeStarted >= VS080_PAIRING_TIMEOUT_MS) {
+  if (!vs080Onboarding() && millis() - vs080ModeStarted >= VS080_PAIRING_TIMEOUT_MS) {
     Serial.println("FLEET: pairing wait timed out; will retry on next sync");
     vs080LeaveToHome();
     return;
@@ -349,6 +362,104 @@ static void vs080DetailsAction() {
   vs080RequestPortal = true;
 }
 
+// ---------------------------------------------------------------------------
+// Factory reset, from Details. Confirmed by tapping 1, 2, 3 in order on three
+// buttons shown in a shuffled order, so a pocket touch cannot do it.
+// ---------------------------------------------------------------------------
+static uint8_t vs080ResetOrder[3] = {1, 2, 3};   // label shown on left/middle/right
+static uint8_t vs080ResetNext = 1;
+static bool vs080ResetTouchWasDown = false;
+static uint32_t vs080ResetStarted = 0;
+
+static Rect vs080ResetButton(uint8_t slot) {
+  return Rect{16 + slot * 98, 146, 92, 56};
+}
+
+static void vs080DrawReset(const char* note = nullptr, uint16_t noteColor = C_GREY) {
+  drawHeader("Fabrieksreset");
+  M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
+  centeredText(62, "Wist wifi en de koppeling met de server.", C_NAVY, 1);
+  centeredText(80, "Opnames op de SD-kaart blijven bewaard.", C_GREY, 1);
+  centeredText(98, "Daarna opnieuw instellen en koppelen.", C_GREY, 1);
+  centeredText(126, note ? note : "Tik 1, 2 en 3 in de goede volgorde", noteColor, 1);
+  for (uint8_t slot = 0; slot < 3; ++slot) {
+    const Rect r = vs080ResetButton(slot);
+    const bool done = vs080ResetOrder[slot] < vs080ResetNext;
+    M5.Display.fillRoundRect(r.x, r.y, r.w, r.h, 10, done ? C_NAVY : C_WHITE);
+    M5.Display.drawRoundRect(r.x, r.y, r.w, r.h, 10, done ? C_NAVY : C_LINE);
+    char label[4];
+    snprintf(label, sizeof(label), "%u", (unsigned)vs080ResetOrder[slot]);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(done ? C_WHITE : C_NAVY);
+    M5.Display.drawString(label, r.x + r.w / 2, r.y + r.h / 2);
+  }
+  centeredText(222, "PWR = annuleren", C_GREY, 1);
+}
+
+static void vs080EnterReset() {
+  // A shuffled order, never the plain 1-2-3 left to right.
+  do {
+    for (uint8_t i = 0; i < 3; ++i) vs080ResetOrder[i] = i + 1;
+    for (int i = 2; i > 0; --i) {
+      const int j = esp_random() % (i + 1);
+      std::swap(vs080ResetOrder[i], vs080ResetOrder[j]);
+    }
+  } while (vs080ResetOrder[0] == 1 && vs080ResetOrder[1] == 2);
+  vs080ResetNext = 1;
+  vs080ResetTouchWasDown = true;   // the tap that opened this screen is still down
+  vs080ResetStarted = millis();
+  vs080Mode = Vs080Mode::RESET_CONFIRM;
+  noteActivity();
+  vs080DrawReset();
+}
+
+static void vs080CancelReset(const char* why) {
+  Serial.printf("FLEET: factory reset cancelled (%s)\n", why);
+  vs080DrawReset(why, C_AMBER);
+  delay(1500);
+  vs080Mode = Vs080Mode::NONE;
+  state = AppState::DETAILS;
+  lastUserActivityMs = millis();
+  screenDirty = true;
+  pwrClickPendingV03 = false;
+  pwrFirstClickMsV03 = 0;
+  pwrWakeGuardUntilV03 = millis() + PWR_DOUBLE_CLICK_MS;
+}
+
+static void vs080ServiceReset() {
+  if (vs080PwrPressed()) { vs080CancelReset("Geannuleerd"); return; }
+  if (millis() - vs080ResetStarted > 30000UL) { vs080CancelReset("Geannuleerd (tijd verstreken)"); return; }
+  int x = 0, y = 0, rx = 0, ry = 0;
+  const bool down = readTouchV03(x, y, rx, ry);
+  const bool pressed = down && !vs080ResetTouchWasDown;
+  vs080ResetTouchWasDown = down;
+  if (!pressed) return;
+  noteActivity();
+  for (uint8_t slot = 0; slot < 3; ++slot) {
+    if (!vs080ResetButton(slot).contains(x, y)) continue;
+    if (vs080ResetOrder[slot] != vs080ResetNext) {
+      vs080CancelReset("Verkeerde volgorde - geannuleerd");
+      return;
+    }
+    ++vs080ResetNext;
+    vs080DrawReset();
+    if (vs080ResetNext > 3) {
+      vs080DrawReset("Terugzetten... Brian herstart", C_NAVY);
+      vsFleetFactoryReset();
+      Serial.flush();
+      delay(1200);
+      ESP.restart();
+    }
+    return;
+  }
+}
+
+static void vs080DetailsReset() {
+  if (captureRunning || sessionOpen) return;
+  vs080EnterReset();
+}
+
 static const char* vs080DetailsInfo() {
   static char line[64];
   snprintf(line, sizeof(line), "%s  v%s", vsFleetDeviceId(), VISITESCRIBE_FW_VERSION);
@@ -365,7 +476,9 @@ void setup() {
   vsPreUploadHook = vs080BeforeUpload;
   vsPostUploadHook = vs080AfterUpload;
   vsDetailsActionHook = vs080DetailsAction;
-  vsDetailsActionLabel = "Wifi instellen";
+  vsDetailsActionLabel = "Wifi";
+  vsDetailsAction2Hook = vs080DetailsReset;
+  vsDetailsAction2Label = "Reset";
   vsDetailsInfoHook = vs080DetailsInfo;
 
   setup_v067();
@@ -392,6 +505,11 @@ void loop() {
       vs080KeepAwake();
       delay(2);
       return;
+    case Vs080Mode::RESET_CONFIRM:
+      vs080ServiceReset();
+      vs080KeepAwake();
+      delay(10);
+      return;
     case Vs080Mode::PAIRING:
       vs080ServicePairing();
       vs080KeepAwake();
@@ -404,6 +522,16 @@ void loop() {
     vs080RequestPortal = false;
     vs080EnterPortal();
     return;
+  }
+  // First-time setup not finished (no Wi-Fi reached, server unreachable): try
+  // again by itself every 30 s while Brian sits idle at HOME.
+  static uint32_t lastOnboardingTry = 0;
+  if (vs080Onboarding() && state == AppState::HOME && vsFleetHasNetworks() &&
+      !captureRunning && !sessionOpen && !vsServerSyncRunning &&
+      millis() - lastOnboardingTry >= 30000UL) {
+    lastOnboardingTry = millis();
+    Serial.println("FLEET: first-time setup not finished; connecting again");
+    beginSync();
   }
   loop_v067();
 }

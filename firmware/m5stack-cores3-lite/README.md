@@ -550,8 +550,22 @@ upload queue (v0.6.7). v0.6.7 now push/pops `setup`/`loop` so v0.8 can wrap it.
    user. Brian notices within ~15 s, shows **Gekoppeld** and uploads.
 
 PWR leaves the hotspot or the pairing screen; recording works without either.
-The hotspot is always reachable later via **Menu -> Apparaatstatus -> Details ->
-Wifi instellen**.
+Until the server reports the Brian as linked, this first-time setup cannot be
+left: PWR is ignored on the hotspot and pairing screens, *Opslaan en
+herstarten* needs at least one network, and a failed connection is retried
+every 30 s. The hotspot is always reachable later via **Menu -> Apparaatstatus
+-> Details -> Wifi**.
+
+### Factory reset
+
+**Menu -> Apparaatstatus -> Details -> Reset**, confirmed by tapping 1, 2 and 3
+in order on three buttons shown in a shuffled order (PWR or 30 s cancels).
+It wipes the Wi-Fi networks, the token and the pairing state and restarts into
+the first-time setup. It keeps the device ID, the recording key and every
+recording on the SD card. The old token is kept as proof: the next enrolment
+presents it, and the server puts the device back to *wacht op koppeling* with
+a new code (owner and history unchanged until the admin links it again), with
+no admin action needed beforehand.
 
 ### Existing Brian (already hand-registered)
 

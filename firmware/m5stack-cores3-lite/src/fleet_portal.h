@@ -106,9 +106,13 @@ static void vsPortalSendPage(const String& notice = String()) {
             "<option value=''>Zoeken...</option></select>"
             "<button type=button class=small style='flex:0 0 auto' onclick=scan(1)>Opnieuw</button></div>"
             "<label for=ssid>Netwerknaam (SSID)</label>"
-            "<input id=ssid name=ssid maxlength=32 required>"
+            "<input id=ssid name=ssid maxlength=32 required autocapitalize=off autocorrect=off spellcheck=false>"
             "<label for=pass>Wachtwoord</label>"
-            "<input id=pass name=pass type=password maxlength=63 autocomplete=new-password>"
+            "<input id=pass name=pass type=password maxlength=63 autocomplete=new-password "
+            "autocapitalize=off autocorrect=off spellcheck=false>"
+            "<label style='font-weight:400;display:flex;gap:8px;align-items:center'>"
+            "<input type=checkbox style='width:auto' onchange=\"document.getElementById('pass')"
+            ".type=this.checked?'text':'password'\"> Wachtwoord tonen</label>"
             "<button class=primary>Toevoegen</button></form></div>"
             "<form method=post action=/finish><button class=primary>Opslaan en herstarten"
             "</button></form><p class=muted style='margin-top:14px'>Apparaat: ");
@@ -130,7 +134,7 @@ static void vsPortalSendPage(const String& notice = String()) {
 
 static void vsPortalRedirectHome() {
   vsPortalWeb->sendHeader("Location", String("http://") + VS_PORTAL_IP.toString() + "/", true);
-  vsPortalWeb->send(302, "text/plain", "");
+  vsPortalWeb->send(302, "text/plain", "Brian instellen: http://192.168.4.1/");
 }
 
 // Scanning while the hotspot is up makes the radio leave the hotspot's channel
@@ -207,6 +211,11 @@ static void vsPortalHandleRemove() {
 }
 
 static void vsPortalHandleFinish() {
+  if (!vsFleetNetCount) {
+    // First-time setup is not done without at least one network.
+    vsPortalSendPage("Voeg eerst minstens een wifi-netwerk toe.");
+    return;
+  }
   String html = F("<!doctype html><html lang=nl><head><meta charset=utf-8>"
                   "<meta name=viewport content='width=device-width,initial-scale=1'><style>");
   html += FPSTR(VS_PORTAL_CSS);

@@ -119,6 +119,11 @@ static void (*vsChargeCancelHook)() = nullptr;
 static bool (*vsBeforeWifiHook)() = nullptr;
 static void (*vsDetailsActionHook)() = nullptr;
 static const char* vsDetailsActionLabel = nullptr;
+// Optional second Details button; with it both share the row, half width each.
+static void (*vsDetailsAction2Hook)() = nullptr;
+static const char* vsDetailsAction2Label = nullptr;
+static const Rect DETAILS_LEFT  {16,148,144,40};
+static const Rect DETAILS_RIGHT {160,148,144,40};
 static const char* (*vsDetailsInfoHook)() = nullptr;
 static uint32_t chargeSyncStartedMs = 0;
 static constexpr uint32_t CHARGE_SYNC_DELAY_MS = 10000;
@@ -718,7 +723,13 @@ static void drawDetails() {
     centeredText(y0 + 4 * dy + dy / 2, "Wifi: niet verbonden", C_GREY, 1);
   }
 
-  if (action) drawTouchButton(STATUS_DETAILS, vsDetailsActionLabel);
+  const bool action2 = vsDetailsAction2Hook && vsDetailsAction2Label;
+  if (action && action2) {
+    drawTouchButton(DETAILS_LEFT, vsDetailsActionLabel);
+    drawTouchButton(DETAILS_RIGHT, vsDetailsAction2Label);
+  } else if (action) {
+    drawTouchButton(STATUS_DETAILS, vsDetailsActionLabel);
+  }
   drawTouchButton(STATUS_BACK, "Terug");
 }
 
@@ -1584,6 +1595,9 @@ void handleTouch(int x, int y) {
         state = AppState::STATUS;
         lastUserActivityMs = millis();
         screenDirty = true;
+      } else if (vsDetailsAction2Hook && vsDetailsActionHook &&
+                 DETAILS_RIGHT.contains(x,y)) {
+        vsDetailsAction2Hook();
       } else if (vsDetailsActionHook && STATUS_DETAILS.contains(x,y)) {
         vsDetailsActionHook();
       }
