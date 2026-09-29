@@ -39,6 +39,10 @@ static bool vsFleetLinked = false;
 // The token held before a factory reset: proves to the server, at the next
 // enrolment, that this is the same box (see vsFleetFactoryReset).
 static String vsFleetPrevToken;
+// The OurMind account this Brian records for, as last told by the server.
+// Kept in NVS so Apparaatstatus can show it without a connection.
+static String vsFleetOwnerEmail;
+static bool vsFleetOwnerOurMind = false;
 
 // Connection order for the current sync: indexes into vsFleetNets, strongest
 // visible network first. Rebuilt by vsFleetPlanWifi() before every sync.
@@ -151,6 +155,20 @@ static bool vsFleetSaveIdentity(const String& deviceId, const String& token) {
   return ok;
 }
 
+static void vsFleetSetOwner(const String& email, bool ourmind) {
+  if (email == vsFleetOwnerEmail && ourmind == vsFleetOwnerOurMind) return;
+  Preferences p;
+  if (!p.begin(VS_FLEET_NS, false)) return;
+  if (email.length()) p.putString("owner", email);
+  else if (p.isKey("owner")) p.remove("owner");
+  p.putBool("owner_om", ourmind);
+  p.end();
+  vsFleetOwnerEmail = email;
+  vsFleetOwnerOurMind = ourmind;
+  Serial.printf("FLEET: owner=%s ourmind=%d\n", email.length() ? email.c_str() : "-",
+                ourmind ? 1 : 0);
+}
+
 static void vsFleetSetLinked(bool linked) {
   if (vsFleetLinked == linked) return;
   Preferences p;
@@ -214,6 +232,8 @@ static void vsFleetBegin(const char* legacyId, const char* legacyToken,
   vsFleetWifiApplied = open ? p.getUInt("wifi_done", 0) : 0;
   vsFleetLinked = open && p.getBool("linked", false);
   vsFleetPrevToken = open && p.isKey("prev_token") ? p.getString("prev_token", "") : String();
+  vsFleetOwnerEmail = open && p.isKey("owner") ? p.getString("owner", "") : String();
+  vsFleetOwnerOurMind = open && p.getBool("owner_om", false);
 
   if (!id.length()) {
     // Only a build made for that one existing Brian may adopt the compiled

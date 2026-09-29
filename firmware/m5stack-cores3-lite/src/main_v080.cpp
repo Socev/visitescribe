@@ -460,6 +460,21 @@ static void vs080DetailsReset() {
   vs080EnterReset();
 }
 
+static const char* vs080StatusAccount(uint16_t& color) {
+  if (!vsFleetLinked) {
+    color = C_AMBER;
+    return "niet gekoppeld";
+  }
+  if (!vsFleetOwnerEmail.length()) {
+    color = C_GREY;
+    return "geen account";
+  }
+  // Green: signed in to OurMind, recordings can be delivered. Amber: the
+  // account is known but its OurMind login has lapsed.
+  color = vsFleetOwnerOurMind ? C_GREEN : C_AMBER;
+  return vsFleetOwnerEmail.c_str();
+}
+
 static const char* vs080DetailsInfo() {
   static char line[64];
   snprintf(line, sizeof(line), "%s  v%s", vsFleetDeviceId(), VISITESCRIBE_FW_VERSION);
@@ -480,6 +495,7 @@ void setup() {
   vsDetailsAction2Hook = vs080DetailsReset;
   vsDetailsAction2Label = "Reset";
   vsDetailsInfoHook = vs080DetailsInfo;
+  vsStatusAccountHook = vs080StatusAccount;
 
   setup_v067();
 

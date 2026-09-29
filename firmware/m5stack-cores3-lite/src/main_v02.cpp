@@ -120,6 +120,9 @@ static bool (*vsBeforeWifiHook)() = nullptr;
 static void (*vsDetailsActionHook)() = nullptr;
 static const char* vsDetailsActionLabel = nullptr;
 // Optional second Details button; with it both share the row, half width each.
+// Optional extra Apparaatstatus line (v0.8: the linked OurMind account).
+// Returns the value text and sets its colour; nullptr = no line.
+static const char* (*vsStatusAccountHook)(uint16_t& color) = nullptr;
 static void (*vsDetailsAction2Hook)() = nullptr;
 static const char* vsDetailsAction2Label = nullptr;
 static const Rect DETAILS_LEFT  {16,148,144,40};
@@ -654,6 +657,11 @@ void drawStatus() {
   drawHeader("Apparaatstatus");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
 
+  // With the account line the five rows tighten to stay above the buttons.
+  uint16_t accountColor = C_NAVY;
+  const char* account = vsStatusAccountHook ? vsStatusAccountHook(accountColor) : nullptr;
+  const int y0 = account ? 58 : 64;
+  const int dy = account ? 19 : 23;
   char line[64];
   snprintf(line, sizeof(line), "Batterij                 %s%d%%",
            batteryCharging ? "+" : "", batteryPct);
@@ -661,26 +669,35 @@ void drawStatus() {
   M5.Display.setTextColor(
       (batteryPct >= 0 && batteryPct <= 15) ? C_AMBER : C_NAVY);
   M5.Display.setTextSize(1);
-  M5.Display.drawString(line, 24, 64);
+  M5.Display.drawString(line, 24, y0);
 
   M5.Display.setTextColor(sdOk ? C_NAVY : C_RED);
   M5.Display.drawString(
       sdOk ? "Opslag                    Beschikbaar"
            : "Opslag                    Fout",
-      24, 87);
+      24, y0 + dy);
 
   M5.Display.setTextColor(audioError ? C_RED : C_NAVY);
   M5.Display.drawString(
       audioError ? "Audio                     Fout"
                  : "Audio                     Gereed",
-      24, 110);
+      24, y0 + 2 * dy);
 
   const bool wifi = WiFi.status() == WL_CONNECTED;
   M5.Display.setTextColor(C_NAVY);
   M5.Display.drawString(
       wifi ? "Wifi                      Verbonden"
            : "Wifi                      Niet verbonden",
-      24, 133);
+      24, y0 + 3 * dy);
+
+  if (account) {
+    M5.Display.setTextColor(C_NAVY);
+    M5.Display.drawString("OurMind", 24, y0 + 4 * dy);
+    const int w = (int)strlen(account) * 6;
+    const int x = 296 - w < 84 ? 84 : 296 - w;
+    M5.Display.setTextColor(accountColor);
+    M5.Display.drawString(account, x, y0 + 4 * dy);
+  }
 
   drawTouchButton(STATUS_DETAILS, "Details");
   drawTouchButton(STATUS_BACK, "Terug");

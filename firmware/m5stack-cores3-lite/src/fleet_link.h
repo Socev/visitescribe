@@ -281,6 +281,14 @@ static bool vsFleetFetchConfig(bool& wifiChanged) {
                    String((const char*)(enrolment["state"] | "active")) == "pending";
   vsFleetPairingCode = enrolment["pairing_code"] | "";
   if (!vsFleetPending) vsFleetSetLinked(true);
+  // Only a server that sends the block (1.9.2+) may change what is shown.
+  if (!enrolment.isNull() && enrolment["owner"].is<JsonObjectConst>()) {
+    vsFleetSetOwner(String((const char*)(enrolment["owner"]["email"] | "")),
+                    enrolment["owner"]["ourmind"] | false);
+  } else if (!enrolment.isNull() && enrolment["linked"].is<bool>() &&
+             !enrolment["linked"].as<bool>()) {
+    vsFleetSetOwner(String(), false);             // bound to nobody
+  }
 
   JsonArrayConst ops = doc["wifi_ops"];
   if (!ops.isNull()) wifiChanged = vsFleetApplyWifiOps(ops);
