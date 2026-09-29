@@ -1,4 +1,4 @@
-// VisiteScribe CoreS3-Lite v0.8.0 -- Brian as a fleet device
+// VisiteScribe CoreS3-Lite v0.8/0.9 -- Brian as a fleet device
 //
 // On top of the complete v0.6.4 recorder (itself v0.6.7 sync + direct Opus):
 //
@@ -13,13 +13,31 @@
 // * firmware updates over the air, only when idle and the battery is > 20 %
 //   on a charger or > 80 % without one, SHA-256 checked before the new image
 //   is made bootable, with automatic rollback if the new image never reaches
-//   the server (fleet_link.h).
+//   the server (fleet_link.h);
+// * a logbook: every printed line kept in PSRAM and on SD, sent to the server
+//   at every sync (fleet_log.h, vsFleetUploadLogs in fleet_link.h).
 //
 // Nothing about recording, the audio format, the upload engine or the USB/PC
 // sync changes. The older layers got three small, optional hook points only.
 
 #include <Arduino.h>
+// Every library header that could mention `Serial` comes in before the
+// logbook tee renames it (see fleet_log.h).
+#include <M5Unified.h>
+#include <SPI.h>
+#include <SD.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Preferences.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Update.h>
+#include <ArduinoJson.h>
+#include <esp_ota_ops.h>
 #include "firmware_version.h"
+#include "fleet_log.h"
+#define Serial vsLogSerial
 
 // Keep the marker in the image: the server reads the version from it.
 extern "C" const char vs080FirmwareMarker[] __attribute__((used)) = VISITESCRIBE_FW_MARKER;
@@ -202,6 +220,7 @@ static void vs080ServicePortal() {
   if (vsPortalService()) {
     vsPortalStop();
     Serial.println("FLEET: setup finished; restarting");
+    if (sdOk) vsLogFlushToSd();
     Serial.flush();
     delay(200);
     ESP.restart();
@@ -337,6 +356,7 @@ static bool vs080BeforeUpload() {
   vsFleetReportRollback();
   bool wifiChanged = false;
   if (vsFleetFetchConfig(wifiChanged) && wifiChanged) vsFleetHeartbeat();
+  vsFleetUploadLogs();
   if (vsFleetPending) {
     vsSetStage(VsServerStage::NOTHING, "Wacht op koppeling");
     vs080EnterPairing();
@@ -447,6 +467,7 @@ static void vs080ServiceReset() {
     if (vs080ResetNext > 3) {
       vs080DrawReset("Terugzetten... Brian herstart", C_NAVY);
       vsFleetFactoryReset();
+      if (sdOk) vsLogFlushToSd();
       Serial.flush();
       delay(1200);
       ESP.restart();
@@ -500,6 +521,8 @@ static const char* vs080DetailsInfo() {
 // 5. Entry points.
 // ---------------------------------------------------------------------------
 void setup() {
+  vsLogBegin();   // first: from here on every printed line is kept
+  vsLogMuteHook = []() { return vsUsbSyncActive; };
   vsFleetBegin(VS080_LEGACY_ID, VS080_LEGACY_TOKEN, VS080_LEGACY_SSIDS, VS080_LEGACY_PASS,
                VS080_LEGACY_WIFI_COUNT);
   vsBeforeWifiHook = vs080BeforeWifi;
@@ -529,8 +552,25 @@ void setup() {
   }
 }
 
+// Write the logbook to SD every minute, but only while nothing else can be
+// using the card: not recording, not syncing, not in USB maintenance.
+static void vs080ServiceLogFlush() {
+  static uint32_t last = 0;
+  if (millis() - last < 60000UL) return;
+  const bool busy = captureRunning || sessionOpen || vsServerSyncRunning ||
+                    vsUsbSyncActive || !sdOk
+#ifdef VISITESCRIBE_DIRECT_OPUS
+                    || !vsDoWorkerDone
+#endif
+      ;
+  if (busy) return;
+  last = millis();
+  vsLogFlushToSd();
+}
+
 void loop() {
   vs080LoopState = state;
+  vs080ServiceLogFlush();
   switch (vs080Mode) {
     case Vs080Mode::PORTAL:
       vs080ServicePortal();

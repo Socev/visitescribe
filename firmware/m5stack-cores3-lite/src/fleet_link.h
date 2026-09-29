@@ -40,6 +40,7 @@ static bool vsFleetConfigSeen = false;
 static String vsFleetLastBody;
 static bool vsFleetDockSync = false;         // this sync was started by the charge auto-sync
 static String vsFleetRolledBackRelease;     // to report at the next successful contact
+static uint32_t vsFleetLogRequest = 0;      // admin asked for the whole logbook
 
 // Absolute floor, whatever the server says: never flash below 20 % battery.
 static constexpr int VS_OTA_BATTERY_FLOOR = 20;
@@ -293,6 +294,8 @@ static bool vsFleetFetchConfig(bool& wifiChanged) {
   JsonArrayConst ops = doc["wifi_ops"];
   if (!ops.isNull()) wifiChanged = vsFleetApplyWifiOps(ops);
 
+  vsFleetLogRequest = doc["log_request"]["id"] | 0;
+
   vsFleetUpdate = VsFleetUpdate();
   JsonObjectConst fw = doc["firmware_update"];
   if (!fw.isNull()) {
@@ -335,6 +338,76 @@ static void vsFleetReportRollback() {
                    String("teruggezet: nieuwe versie bereikte de server niet; draait ") +
                    VISITESCRIBE_FW_VERSION);
   vsFleetRolledBackRelease = "";
+}
+
+// --------------------------------------------------------------------------
+// logbook upload
+// --------------------------------------------------------------------------
+
+// Sends the logbook lines added since the last successful upload (or, when
+// the admin asked, everything still kept), in chunks of up to 64 KiB. The
+// high-water mark (boot, line) is stored in NVS only after the server said
+// 200, so a lost reply just means a resend, which the server ignores.
+static void vsFleetUploadLogs() {
+  Preferences p;
+  uint32_t sentBoot = 0, sentLine = 0;
+  if (p.begin("vslog", true)) {
+    sentBoot = p.getUInt("sent_b", 0);
+    sentLine = p.getUInt("sent_l", 0);
+    p.end();
+  }
+  const uint32_t request = vsFleetLogRequest;
+  if (sdOk) vsLogFlushToSd();   // this runs inside the sync: the card is ours
+  static constexpr size_t CHUNK = 64 * 1024;
+  char* buf = static_cast<char*>(heap_caps_malloc(CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!buf) return;
+  uint32_t b = request ? 0 : sentBoot, l = request ? 0 : sentLine;
+  const int rounds = request ? 40 : 8;   // at most ~512 KiB per sync, 2.5 MiB on request
+  size_t total = 0;
+  for (int round = 0; round < rounds; ++round) {
+    size_t n = 0;
+    if (sdOk) {
+      n = vsLogReadSd(b, l, buf, CHUNK);
+    } else if (b < vsLogBoot || (b == vsLogBoot)) {
+      uint32_t last = 0;
+      n = vsLogRingCopy(b == vsLogBoot ? l : 0, buf, CHUNK, last);
+      if (n) {
+        b = vsLogBoot;
+        l = last;
+      }
+    }
+    const bool finished = n < CHUNK - 512;
+    if (!n && !request) break;
+    HTTPClient http;
+    if (!vsBeginHttp(http, String(VISITESCRIBE_SERVER_BASE_URL) + "/v1/device/logs")) break;
+    http.addHeader("Content-Type", "text/plain; charset=utf-8");
+    if (request && finished) http.addHeader("X-Log-Request", String(request));
+    const int code = http.POST(reinterpret_cast<uint8_t*>(buf), n);
+    http.end();
+    if (code != 200) {
+      Serial.printf("FLEET: log upload failed (%d) after %u bytes\n", code, (unsigned)total);
+      break;
+    }
+    total += n;
+    if (b > sentBoot || (b == sentBoot && l > sentLine)) {
+      sentBoot = b;
+      sentLine = l;
+      if (p.begin("vslog", false)) {
+        p.putUInt("sent_b", sentBoot);
+        p.putUInt("sent_l", sentLine);
+        p.end();
+      }
+    }
+    if (finished) {
+      if (request) vsFleetLogRequest = 0;
+      break;
+    }
+  }
+  free(buf);
+  if (total || request) {
+    Serial.printf("FLEET: logbook sent %u bytes%s\n", (unsigned)total,
+                  request ? " (full, on request)" : "");
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -548,6 +621,7 @@ static void vsFleetMaybeUpdate() {
   vsFleetReport("installing", why);
   vsFleetDrawUpdate("Herstarten...", 1, 1);
   Serial.printf("FLEET: update %s written; restarting\n", vsFleetUpdate.version.c_str());
+  if (sdOk) vsLogFlushToSd();
   Serial.flush();
   delay(800);
   ESP.restart();

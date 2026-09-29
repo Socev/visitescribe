@@ -642,3 +642,23 @@ Compiled for `cores3-lite-direct-opus`, `cores3-lite-release` and
 `cores3-lite-demo`; the server side is covered by its test suite. The hotspot,
 QR scan, captive-portal redirect on iOS/Android, and a real OTA + rollback have
 not yet run on a CoreS3-Lite.
+
+
+## v0.9: logbook
+
+Everything Brian prints to the serial port is also kept (`src/fleet_log.h`):
+numbered `B<boot>.<line>`, stamped with the clock and uptime, in a 256 KiB
+PSRAM ring from the first line of `setup()`, and appended to
+`/brianlog/log_cur.txt` on the SD card once a minute while Brian is idle
+(never during a recording, a sync or USB maintenance); rotated to
+`log_old.txt` at 512 KiB. A log from before a crash or restart therefore
+survives, except the lines of the last minute before it.
+
+At every sync the lines since the last successful upload go to the server
+(up to 512 KiB per sync); *Haal volledige log op* on the admin device page
+makes Brian resend everything he still keeps. The binary USB-sync stream is
+not captured and the device token in the `VSUSB INFO`/`ENTER` replies is
+masked. `Serial` is replaced by a tee for everything compiled after
+`fleet_log.h`; every call is forwarded unchanged.
+
+Host test: `g++ -std=c++17 -I tests/log_stubs tests/fleet_log_host.cpp`.
