@@ -491,7 +491,7 @@ void drawHome() {
   centeredText(134, "Standaard: Patient", C_GREY, 1);
 
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  if (vsDoRecoveredOnBoot) centeredText(160, "Audio hersteld - kies Verzenden", C_VIOLET, 1);
+  if (vsDoRecoveredOnBoot) centeredText(160, "Audio hersteld - kies Synchroniseer", C_VIOLET, 1);
   else
 #endif
   centeredText(160, "Lokaal klaar voor gebruik", C_GREY, 1);
@@ -659,7 +659,7 @@ void drawMenu() {
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
 
   drawTouchButton(
-      THREE_TOP, "Verzenden", "via wifi naar server", true);
+      THREE_TOP, "Synchroniseer", "met de server, via wifi", true);
   drawTouchButton(THREE_MIDDLE, "Apparaatstatus");
   drawTouchButton(THREE_BOTTOM, "Terug");
 }
@@ -762,7 +762,7 @@ static void drawDetails() {
 }
 
 void drawSync() {
-  drawHeader("Verzenden");
+  drawHeader("Synchroniseer");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
 
   if (syncPhase == SyncPhase::NO_CREDENTIALS) {
@@ -1462,7 +1462,7 @@ void handleActiveRecordingError() {
   uiErrorTitle = "Opname onderbroken";
   uiErrorDetail = "Audio- of opslagfout gedetecteerd";
 #ifdef VISITESCRIBE_DIRECT_OPUS
-  if (recovered) uiErrorDetail = "Audio bewaard - kies Verzenden";
+  if (recovered) uiErrorDetail = "Audio bewaard - kies Synchroniseer";
 #endif
   state = AppState::ERROR;
   screenDirty = true;

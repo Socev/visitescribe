@@ -162,9 +162,9 @@ static const char* vsStageName(VsServerStage stage) {
     case VsServerStage::CONFIRM: return "Ontvangst controleren...";
     case VsServerStage::DONE: return "Alles verzonden";
     case VsServerStage::NOTHING: return "Alles is al verzonden";
-    case VsServerStage::ERROR: return "Verzenden onderbroken";
+    case VsServerStage::ERROR: return "Sync onderbroken";
   }
-  return "Verzenden";
+  return "Synchroniseer";
 }
 
 static void vsDrawServerSync(bool force = false) {
@@ -172,7 +172,7 @@ static void vsDrawServerSync(bool force = false) {
   if (!force && millis() - vsServerLastDrawMs < 200) return;
   vsServerLastDrawMs = millis();
 
-  drawHeader("Verzenden");
+  drawHeader("Synchroniseer");
   M5.Display.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H, C_WHITE);
 
   const bool error = vsServerStage == VsServerStage::ERROR;

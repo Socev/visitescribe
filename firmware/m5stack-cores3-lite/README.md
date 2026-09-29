@@ -292,7 +292,7 @@ Key behavior:
   has safely stopped;
 - audio/storage failures during an active recording stop the capture and show a
   blocking truthful error rather than a success screen;
-- MENU is **Verzenden / Apparaatstatus / Terug**; technical codec, board and
+- MENU is **Synchroniseer / Apparaatstatus / Terug** (was Verzenden until v0.8.3); technical codec, board and
   network information lives under Details;
 - recording now dims after about 10 seconds and sleeps the LCD after about 30
   seconds; ordinary menus dim after about 15 seconds. Active server sync never
