@@ -751,3 +751,36 @@ exactly like a new CoreS3. Updates after that go over the air with the
 the logbook while recording), which physical button M5Unified reports as
 BtnA/BtnB, battery/charging figures from the M5PM1, recording while the flash
 writes (no `dropped frames`), and a sync + OTA round trip.
+
+## v0.12: zuinig in rust, "Brian wordt wakker"
+
+**Light sleep when truly idle** (`src/idle_power.h`, both boards). Truly idle means:
+HOME (or an error screen), screen off, on battery, nothing recording/saving/
+syncing/updating, no USB sync, hotspot or pairing, Wi-Fi off, no button gesture
+under way. Brian then light-sleeps between loop passes; RAM, PSRAM (logbook ring)
+and all state survive, so waking is instant.
+
+| | CoreS3-Lite | StickS3 |
+|---|---|---|
+| Woken by a press | AXP2101 latches the PWR press; Brian wakes every 200 ms to read it (max 0.2 s delay, nothing lost) | GPIO 11/12 wake at once |
+| Timer wake | 200 ms | 1 s |
+| Extra | FT6336 touch hibernates while asleep, reset on wake | — |
+| After 2 h idle on battery | AXP power-off; PWR starts Brian | deep sleep; either button starts Brian |
+
+USB/charger (VBUS ≥ 4 V) or the Bottom3 dock (charge detector latched) means no
+sleep and no power-off: charging, charge auto-sync and USB sync are unchanged.
+The IMU is no longer started (it was never used).
+
+Every 10 minutes the logbook gets
+`POWER: battery=…mV …% external=… asleep=…s of …s state=…` — compare a night on
+battery before and after in the admin logbook.
+
+**Wake animation** (`src/wake_animation.h`). The first press on a dark screen
+wakes Brian: at rest 2 s of Brian opening his eyes, yawning and stretching; during
+a recording 1 s of a listening Brian (the microphone keeps being serviced). Every
+press during the animation is swallowed, so a double click meant for the menu can
+no longer start a recording.
+
+**To verify on hardware:** POWER lines overnight; wake latency on the CoreS3; a
+PWR press after the 2 h power-off; USB sync after Brian has slept (the USB port
+is only used on external power, when Brian never sleeps).

@@ -8,7 +8,7 @@
 // version out of the uploaded image through the marker below, so the two can
 // never disagree. Bump this for every image you upload.
 #ifndef VISITESCRIBE_FW_VERSION
-#define VISITESCRIBE_FW_VERSION "0.11.0"
+#define VISITESCRIBE_FW_VERSION "0.12.0"
 #endif
 
 // The board travels in the image marker and in every heartbeat; the server

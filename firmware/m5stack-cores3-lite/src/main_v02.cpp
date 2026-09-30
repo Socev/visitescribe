@@ -1804,6 +1804,7 @@ void setup() {
   cfg.pmic_button = false;       // direct AXP2101 handling in serviceInputs()
   cfg.internal_mic = true;
   cfg.internal_spk = true;
+  cfg.internal_imu = false;      // 0.12.0: the motion sensor is never used; keep it off
   M5.begin(cfg);
 
 #if VS_STICK

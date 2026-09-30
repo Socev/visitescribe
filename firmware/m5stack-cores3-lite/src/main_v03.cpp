@@ -39,6 +39,8 @@
 
 static bool axp2101DirectOk = false;
 
+#include "wake_animation.h"
+
 // Software double-click recogniser. We delay the single-click action briefly so
 // the first click can never start/stop a recording before we know whether a
 // second click follows.
@@ -275,8 +277,9 @@ static void serviceInputsV03() {
   if (stickA || stickB) {
     const bool chooser = quickModeChoiceActive && state == AppState::RECORDING;
     if (!chooser && displayPower == DisplayPower::OFF) {
-      // Either button on a dark screen only wakes it.
+      // Either button on a dark screen only wakes it: Brian wakes up.
       wakeOnlyIfOff();
+      vsPlayWakeAnimation(state == AppState::RECORDING || state == AppState::PAUSED);
       pwrClickPendingV03 = false;
       pwrFirstClickMsV03 = 0;
       pwrWakeGuardUntilV03 = millis() + PWR_DOUBLE_CLICK_MS;
@@ -327,9 +330,11 @@ static void serviceInputsV03() {
           "PWR chooser-cycle choice=%u\n",
           (unsigned)quickChoice);
     } else if (displayPower == DisplayPower::OFF && wakeOnlyIfOff()) {
+      // Brian wakes up (0.12.0); every press during it is swallowed.
+      vsPlayWakeAnimation(state == AppState::RECORDING || state == AppState::PAUSED);
       pwrClickPendingV03 = false;
       pwrFirstClickMsV03 = 0;
-      pwrWakeGuardUntilV03 = now + PWR_DOUBLE_CLICK_MS;
+      pwrWakeGuardUntilV03 = millis() + PWR_DOUBLE_CLICK_MS;
       Serial.printf("PWR wake-only app=%u\n", (unsigned)before);
     } else if (static_cast<int32_t>(pwrWakeGuardUntilV03 - now) > 0) {
       // Consume every short click belonging to the same wake gesture and move

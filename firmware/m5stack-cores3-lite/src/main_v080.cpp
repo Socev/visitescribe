@@ -630,6 +630,8 @@ static const char* vs080DetailsInfo() {
   return line;
 }
 
+#include "idle_power.h"   // 0.12.0: light sleep when idle, off after 2 h
+
 // ---------------------------------------------------------------------------
 // 5. Entry points.
 // ---------------------------------------------------------------------------
@@ -762,4 +764,5 @@ void loop() {
     beginSync();
   }
   loop_v067();
+  vsServiceIdlePower();
 }
