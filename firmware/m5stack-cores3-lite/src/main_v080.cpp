@@ -357,6 +357,8 @@ static void vs080ServicePairing() {
   if (vsFleetPairingCode != before) vsFleetDrawPairing();
 }
 
+#include "auto_sync.h"    // 0.13: automatic sync while resting, stopped by any button
+
 // ---------------------------------------------------------------------------
 // 4. Hooks into the older layers.
 // ---------------------------------------------------------------------------
@@ -365,7 +367,8 @@ static bool vs080BeforeWifi() {
   // trusted only for a sync that the charge auto-sync itself started.
   vsFleetDockSync = vs080LoopState == AppState::CHARGE_SYNC;
   if (!vsFleetHasNetworks()) return false;
-  vsFleetPlanWifi();
+  if (vsAutoPlanned) vsAutoPlanned = false;   // the automatic sync just scanned
+  else vsFleetPlanWifi();
   return true;
 }
 
@@ -378,6 +381,7 @@ static bool vs080BeforeUpload() {
       return false;
     }
   }
+  if (vsSyncAborted()) return vsFail("Gestopt: knop ingedrukt");
   if (!vsFleetHeartbeat() && vsFleetLastHttp == 401 &&
       vsFleetErrorCode(vsFleetLastBody) == "INVALID_DEVICE") {
     // The server itself says it does not know this token (a pending device was
@@ -397,7 +401,9 @@ static bool vs080BeforeUpload() {
   vsFleetReportRollback();
   bool wifiChanged = false;
   if (vsFleetFetchConfig(wifiChanged) && wifiChanged) vsFleetHeartbeat();
+  if (vsSyncAborted()) return vsFail("Gestopt: knop ingedrukt");
   vsFleetUploadLogs();
+  if (vsSyncAborted()) return vsFail("Gestopt: knop ingedrukt");
   if (vsFleetPending) {
     vsSetStage(VsServerStage::NOTHING, "Wacht op koppeling");
     vs080EnterPairing();
@@ -409,6 +415,9 @@ static bool vs080BeforeUpload() {
 
 static void vs080AfterUpload() {
   if (vs080Mode != Vs080Mode::NONE) return;
+  // No firmware update during an automatic sync: it would take Brian away for
+  // a minute and restart him while the doctor may want to record.
+  if (vsAutoPhase != VsAutoPhase::IDLE) return;
   if (WiFi.status() != WL_CONNECTED) return;       // the sync lost Wi-Fi
   if (vsFleetImagePendingVerify()) {
     // Never overwrite the only known-good slot while this image is unproven.
@@ -643,6 +652,7 @@ void setup() {
   vsBeforeWifiHook = vs080BeforeWifi;
   vsPreUploadHook = vs080BeforeUpload;
   vsPostUploadHook = vs080AfterUpload;
+  vsSyncAbortHook = vsAutoAbortRequested;
   vsDetailsActionHook = vs080DetailsAction;
   vsDetailsActionLabel = "Wifi";
   vsDetailsAction2Hook = vs080DetailsReset;
@@ -723,6 +733,7 @@ static void vs080StickServicePendingCount() {
 #endif
 
 void loop() {
+  vsServiceAutoSync();   // first: it must see a button press before anything else
   vs080LoopState = state;
   vs080ServiceLogFlush();
 #if VS_STICK

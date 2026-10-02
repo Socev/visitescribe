@@ -394,6 +394,7 @@ static void vsFleetUploadLogs() {
     }
     const bool finished = n < CHUNK - 512;
     if (!n && !request) break;
+    if (vsSyncAborted()) break;
     HTTPClient http;
     if (!vsBeginHttp(http, String(VISITESCRIBE_SERVER_BASE_URL) + "/v1/device/logs")) break;
     http.addHeader("Content-Type", "text/plain; charset=utf-8");

@@ -784,3 +784,42 @@ no longer start a recording.
 **To verify on hardware:** POWER lines overnight; wake latency on the CoreS3; a
 PWR press after the 2 h power-off; USB sync after Brian has slept (the USB port
 is only used on external power, when Brian never sleeps).
+
+## v0.13 (test build 0.13.0-test1): automatic sync while resting
+
+`src/auto_sync.h`, both boards. While Brian rests with recordings waiting he
+sends them by himself; any button press stops that at once.
+
+**When.** Every 5 minutes, and once straight after a recording ends (as soon as
+the screen has gone dark). Only when truly at rest: HOME, screen off, not
+recording, no USB sync / hotspot / pairing, Wi-Fi off, battery ≥ 15 % or on a
+charger, Brian linked, and at least one recording waiting.
+
+**How.** First an asynchronous Wi-Fi scan (~1.5 s, nothing sent). Only if a known
+network is in range does Brian connect, to the strongest one first, and run the
+normal sync (heartbeat, config, logbook, recordings, delete what the server
+confirmed). Without a known network he waits for the next turn, so a home visit
+costs a scan, not a failing connect. A failed connect or sync waits longer: 10,
+20, then 30 minutes. The screen stays off and the sync is not user activity
+(`vsQuietActivity`), so the screen timer and the 2-hour switch-off are not reset.
+**No firmware update during an automatic sync**: updates stay with a sync you
+start yourself and the charger sync.
+
+**Stopping.** Any press stops it. During scan and connect immediately; during the
+upload at the next chunk boundary (usually well under a second; on a stalling
+network at most the 15 s request timeout an automatic sync uses instead of 60 s).
+The CoreS3 reads the latched AXP2101 PWR press, the StickS3 latches both buttons
+with an edge interrupt (the upload blocks the loop). The engine checks
+`vsSyncAborted()` between chunks, between sessions and between the fleet steps.
+Nothing is lost: the server keeps only complete chunks, Brian deletes only what
+the server confirmed. The press then wakes Brian (wake animation), Wi-Fi is off,
+and the next press starts a recording.
+
+**Logbook.** One line per attempt:
+`AUTOSYNC: result=ok|nothing|no_known_network|no_connect|failed|stopped_by_button|timeout took=…ms sent=… next_in=…s battery=…% external=…`.
+With the POWER lines this gives the real battery cost.
+
+**To verify on hardware:** a day of AUTOSYNC + POWER lines next to 0.12.0; a
+press during scan, connect and upload (time until HOME); that the recording
+started right after a stopped sync is complete; that a home visit without Wi-Fi
+only shows `no_known_network` lines.

@@ -62,6 +62,12 @@ static constexpr uint32_t VS_LEGACY_CHUNK_SECONDS = 10;
 static constexpr size_t VS_GCM_TAG_BYTES = 16;
 static constexpr size_t VS_GCM_NONCE_BYTES = 12;
 static constexpr uint32_t VS_HTTP_TIMEOUT_MS = 60000;
+// 0.13: an automatic sync uses a shorter timeout, so a stalling network can
+// hold up a button press for seconds rather than a minute (auto_sync.h).
+static uint32_t vsHttpTimeoutOverrideMs = 0;
+static uint32_t vsHttpTimeoutMs() {
+  return vsHttpTimeoutOverrideMs ? vsHttpTimeoutOverrideMs : VS_HTTP_TIMEOUT_MS;
+}
 
 // 6144 int16 samples = 12 KiB. For the current 48 kHz stereo source this is
 // exactly 1024 output samples per read (3 source frames x 2 channels each).
@@ -116,6 +122,13 @@ static uint32_t vsServerSessionsSkipped = 0;
 static uint32_t vsServerSessionsTotal = 0;
 static uint32_t vsServerLastDrawMs = 0;
 static bool vsServerSyncRunning = false;
+
+// 0.13: a sync Brian started by himself stops as soon as a button is pressed
+// (auto_sync.h). Checked between chunks and between the steps around them;
+// a stopped sync loses nothing: the server keeps only complete chunks and
+// Brian deletes only what the server confirmed.
+static bool (*vsSyncAbortHook)() = nullptr;
+static bool vsSyncAborted() { return vsSyncAbortHook && vsSyncAbortHook(); }
 
 static bool vsServerTouchLocked() {
   return vsServerSyncRunning;
@@ -934,11 +947,11 @@ static void vsAddCommonHeaders(HTTPClient& http) {
 static bool vsBeginHttp(HTTPClient& http, const String& url) {
   if (!vsTlsReady) {
     vsTls.setCACert(VISITESCRIBE_SERVER_CA_PEM);
-    vsTls.setTimeout(VS_HTTP_TIMEOUT_MS / 1000);
     vsTlsReady = true;
   }
+  vsTls.setTimeout(vsHttpTimeoutMs() / 1000);
   if (!http.begin(vsTls, url)) return false;
-  http.setTimeout(VS_HTTP_TIMEOUT_MS);
+  http.setTimeout(vsHttpTimeoutMs());
   http.setReuse(true);
   vsAddCommonHeaders(http);
   return true;
@@ -1356,6 +1369,7 @@ static bool vsUploadDirectOpusChunks(
   const uint32_t started = millis();
 
   for (const auto& chunk : session.opus) {
+    if (vsSyncAborted()) return vsFail("Gestopt: knop ingedrukt");
     vsServerChunkCurrent = chunk.sequence;
     if (!vsNeedSequence(chunk.sequence, missing)) {
       ++skipped;

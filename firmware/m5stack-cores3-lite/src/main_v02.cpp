@@ -183,6 +183,9 @@ uint32_t pauseStartedMs = 0;
 uint32_t totalPausedMs = 0;
 uint32_t finishedAtMs = 0;
 uint32_t lastUserActivityMs = 0;
+// 0.13: a sync Brian starts by himself runs with the screen off and is not
+// user activity; while this is set noteActivity() does nothing.
+static bool vsQuietActivity = false;
 uint32_t lastUiSecond = UINT32_MAX;
 uint32_t lastBatteryRefreshMs = 0;
 uint32_t syncAttemptStartedMs = 0;
@@ -1633,6 +1636,7 @@ void serviceSync() {
 }
 
 void noteActivity() {
+  if (vsQuietActivity) return;
   lastUserActivityMs = millis();
   if (displayPower != DisplayPower::ACTIVE) {
     if (displayPower == DisplayPower::OFF) M5.Display.wakeup();

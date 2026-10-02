@@ -962,7 +962,7 @@ static bool vs067PutChunk(HTTPClient& http, bool& httpStarted,
     httpStarted = true;
   } else {
     if (!http.setURL(uri)) return vsFail("HTTPS chunk URL wisselen mislukt");
-    http.setTimeout(VS_HTTP_TIMEOUT_MS);
+    http.setTimeout(vsHttpTimeoutMs());
     http.setReuse(true);
     vsAddCommonHeaders(http);
   }
@@ -1012,6 +1012,7 @@ static bool vs067UploadSpeechChunks(const VsLocalSession& session,
     }
     uint32_t remaining = h.dataSize;
     while (remaining) {
+      if (vsSyncAborted()) { wav.close(); return vsFail("Gestopt: knop ingedrukt"); }
       const uint32_t sourceBytes = vsSpeechSourceBytes(h, remaining);
       if (sourceBytes == 0) { remaining = 0; break; }
       ++sequence;
@@ -1103,6 +1104,7 @@ static bool vs067UploadLegacyChunks(const VsLocalSession& session,
     }
     uint32_t remaining = h.dataSize;
     while (remaining) {
+      if (vsSyncAborted()) { wav.close(); return vsFail("Gestopt: knop ingedrukt"); }
       const uint32_t sourceBytes = vsLegacySourceBytes(h, remaining);
       if (sourceBytes == 0) { remaining = 0; break; }
       ++sequence;
@@ -1289,6 +1291,7 @@ static bool vs067SyncAllPending() {
   if (!vsFetchServerKey(serverKeyId, serverPublicPem)) return false;
   size_t preparedIndex = 0;
   for (const auto& prefix : prefixes) {
+    if (vsSyncAborted()) return vsFail("Gestopt: knop ingedrukt");
     if (WiFi.status() != WL_CONNECTED) return vsFail("WiFi verbinding verloren");
 
     VsLocalSession local;
