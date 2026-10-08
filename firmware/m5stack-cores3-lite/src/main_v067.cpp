@@ -621,8 +621,11 @@ static void vsUsbReadFile(const String& path, uint32_t offset, uint32_t wanted) 
   Serial.flush();
 }
 
+static void (*vsUsbTestHook)(const String& line) = nullptr;   // crash_trail.h
+
 static void vsUsbHandleCommand(String line) {
   line.trim();
+  if (vsUsbTestHook && line.startsWith("VSTEST ")) { vsUsbTestHook(line); return; }
   if (!line.startsWith("VSUSB ")) return;
 
   if (line == "VSUSB HELLO") {

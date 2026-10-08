@@ -49,6 +49,10 @@ static bool vsAutoAbort = false;
 static bool vsAutoPlanned = false;         // vs080BeforeWifi keeps our scan's order
 static bool vsAutoWasRecording = false;
 static uint32_t vsAutoLastCheck = 0;
+// Counting what waits walks the recordings folder (seconds on a busy card).
+// test2: only after something could have changed it -- boot, a recording, any
+// sync, USB maintenance -- not every 5 minutes. -1 = unknown.
+static int32_t vsAutoPendingKnown = -1;
 
 #if VS_STICK
 // The upload blocks the loop, so a short click would never be seen by
@@ -148,6 +152,7 @@ static void vsAutoFinish(VsAutoResult result) {
   vsHttpTimeoutOverrideMs = 0;
   vsAutoPlanned = false;
   vsAutoPhase = VsAutoPhase::IDLE;
+  vsAutoPendingKnown = -1;
 
   uint32_t wait = VS_AUTO_INTERVAL_MS;
   switch (result) {
@@ -283,6 +288,10 @@ static void vsServiceAutoSync() {
   const bool recordingNow = sessionOpen || captureRunning;
   if (vsAutoWasRecording && !recordingNow) vsAutoNextAt = now;
   vsAutoWasRecording = recordingNow;
+  const bool busyNow = recordingNow || vsServerSyncRunning || vsUsbSyncActive ||
+                       state == AppState::SYNC || state == AppState::CHARGE_SYNC;
+  if (busyNow) vsAutoPendingKnown = -1;          // may change what waits
+  if (vsAutoPendingKnown == 0) return;           // nothing waits; nothing to do
 
   if ((int32_t)(now - vsAutoNextAt) < 0) return;
   if (!vsAutoRestingNow()) return;
@@ -294,7 +303,8 @@ static void vsServiceAutoSync() {
     Serial.println("AUTOSYNC: battery low; skipped");
     return;
   }
-  if (pendingCountUi() == 0) {
+  vsAutoPendingKnown = (int32_t)pendingCountUi();
+  if (vsAutoPendingKnown == 0) {
     vsAutoNextAt = now + VS_AUTO_INTERVAL_MS;
     return;
   }

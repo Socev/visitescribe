@@ -823,3 +823,58 @@ With the POWER lines this gives the real battery cost.
 press during scan, connect and upload (time until HOME); that the recording
 started right after a stopped sync is complete; that a home visit without Wi-Fi
 only shows `no_known_network` lines.
+
+### 0.13.0-test2: restart during a recording
+
+On 8 Oct 2026 a CoreS3 on test1 restarted 5.5 minutes into a recording with
+`reset_reason=6`: the task watchdog, because core 0 (Opus encoder + its SD
+writes, microphone task) gave its idle task no time for 5 seconds. The boot
+recovery saved the 5.5 minutes and the automatic sync delivered them; the rest of
+the visit was not recorded. The log lines of the recording itself were lost with
+the restart, so the exact cause is not proven. Automatic sync does not run during
+a recording and is not involved. The SD card is slow here (a plain directory walk
+of 44 files takes 4.6 s), which makes a multi-second storage stall inside the
+encoder's busy-waiting SD writes the likeliest cause.
+
+`src/crash_trail.h`:
+
+* task watchdog 10 s instead of 5 s (`esp_task_wdt_init`; test2 had 30 s), the
+  length of the audio queue: a shorter storage stall is absorbed without loss, a
+  longer hang restarts Brian, the boot recovery saves the audio and (test3) the
+  recording starts again;
+* a crash trail in RTC memory, updated every loop pass and kept across a
+  watchdog/panic reset; the next boot logs
+  `CRASH: previous run ended by task_watchdog; state=… recording=1 (for …s) encoder_stage=… frames=… last_frame=…ms_before_last_loop queue=… high=… dropped=…`;
+* while recording, `AUDIO: encoder stalled …ms stage=… queue=…` after 2 s
+  without progress, and `AUDIO: encoder resumed after …ms`.
+
+Also in test2: the automatic sync counted waiting recordings by walking the
+folder every 5 minutes even when nothing waited (4.6–6.7 s awake each time).
+It now counts only after something could have changed it: boot, a recording, a
+sync, USB maintenance.
+
+### 0.13.0-test3: a recording cut off by a restart starts again
+
+`src/crash_trail.h`. After a watchdog or panic restart that hit a running
+recording, Brian starts a new recording as soon as he is up (boot + recovery,
+about 15 s), in the same mode: patient or meeting; a restart while the
+ten-second chooser was still open shows the chooser again. It is a separate
+recording in the list, with the event `resumed_after_restart`; the screen shows
+"Hervat na herstart". The part before the restart is saved by the boot recovery
+and synced as its own recording, as before.
+
+Never resumed: a brownout (empty battery), power-on, an update or software
+restart, a USB/reset-button reset, a full StickS3 flash.
+
+**Bootloop guard.** At most 2 resumes in a row that crash again within 5 minutes.
+The third time Brian stays on an error screen ("Opname gestopt") and records
+nothing until the doctor presses the button. The count resets once a (resumed)
+recording has run 5 minutes, or when a recording is stopped normally.
+
+Logbook: `CRASH: ...`, then `RESUME: will restart the recording (mode=… chosen=…,
+resume n of max 2)` and `RESUME: recording restarted after a crash`, or
+`RESUME: not restarting the recording; n restarts in a row`.
+
+**Test hook.** With USB serial open (115200), `VSTEST HANG` during a recording
+blocks core 0 like a storage hang; after 10 s the task watchdog restarts Brian.
+Ignored when not recording.

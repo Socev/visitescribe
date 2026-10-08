@@ -358,6 +358,7 @@ static void vs080ServicePairing() {
 }
 
 #include "auto_sync.h"    // 0.13: automatic sync while resting, stopped by any button
+#include "crash_trail.h"  // 0.13 test2: crash trail, 30 s task watchdog, stall log
 
 // ---------------------------------------------------------------------------
 // 4. Hooks into the older layers.
@@ -646,6 +647,7 @@ static const char* vs080DetailsInfo() {
 // ---------------------------------------------------------------------------
 void setup() {
   vsLogBegin();   // first: from here on every printed line is kept
+  vsTrailBoot();  // the CRASH line of a watchdog/panic restart, then the 30 s watchdog
   vsLogMuteHook = []() { return vsUsbSyncActive; };
   vsFleetBegin(VS080_LEGACY_ID, VS080_LEGACY_TOKEN, VS080_LEGACY_SSIDS, VS080_LEGACY_PASS,
                VS080_LEGACY_WIFI_COUNT);
@@ -733,6 +735,8 @@ static void vs080StickServicePendingCount() {
 #endif
 
 void loop() {
+  vsTrailService();
+  vsServiceResume();
   vsServiceAutoSync();   // first: it must see a button press before anything else
   vs080LoopState = state;
   vs080ServiceLogFlush();
